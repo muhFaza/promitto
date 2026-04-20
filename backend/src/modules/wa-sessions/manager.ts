@@ -15,10 +15,24 @@ import { env } from '../../config/env.js';
 import { isUserJid, phoneFromJid } from '../../lib/jid.js';
 import { logger } from '../../lib/logger.js';
 import * as contactsService from '../contacts/service.js';
-import { getConnection, listConnected, upsertStatus } from './service.js';
+import {
+  clearOrphanConnecting,
+  getConnection,
+  listConnected,
+  upsertStatus,
+} from './service.js';
 import type { SessionEvent, WaSnapshot, WaStatus } from './types.js';
 
-const baileysLogger = pino({ level: env.NODE_ENV === 'development' ? 'debug' : 'silent' });
+const MAX_RECONNECT_ATTEMPTS = 5;
+
+const baileysLogger = pino({
+  level:
+    env.BAILEYS_LOG_LEVEL !== 'silent'
+      ? env.BAILEYS_LOG_LEVEL
+      : env.NODE_ENV === 'development'
+        ? 'debug'
+        : 'silent',
+});
 
 type Handle = {
   userId: string;
@@ -107,6 +121,8 @@ class SessionManager {
     const h = this.ensureHandle(userId);
     if (h.sock) return;
     if (h.connectPromise) return h.connectPromise;
+
+    h.reconnectAttempts = 0;
 
     const promise = this.openSocket(h).catch((err: unknown) => {
       logger.error({ err, userId }, 'wa connect failed');
@@ -285,6 +301,16 @@ class SessionManager {
       }
 
       h.reconnectAttempts += 1;
+      if (h.reconnectAttempts > MAX_RECONNECT_ATTEMPTS) {
+        logger.warn(
+          { userId: h.userId, attempts: h.reconnectAttempts, statusCode, message },
+          'wa reconnect attempts exhausted — giving up',
+        );
+        this.setStatus(h, 'failed', {
+          error: `Reconnect failed after ${MAX_RECONNECT_ATTEMPTS} attempts: ${message ?? 'disconnected'}. Try Connect again or re-pair.`,
+        });
+        return;
+      }
       const delayMs = Math.min(60_000, 1_000 * 2 ** Math.max(0, h.reconnectAttempts - 1));
       this.setStatus(h, 'connecting', { error: message ?? 'disconnected' });
       h.reconnectTimer = setTimeout(() => {
@@ -314,6 +340,7 @@ class SessionManager {
     }
 
     h.intentionalClose = true;
+    h.reconnectAttempts = 0;
     if (h.reconnectTimer) {
       clearTimeout(h.reconnectTimer);
       h.reconnectTimer = null;
@@ -342,6 +369,10 @@ class SessionManager {
   }
 
   async restoreAll(): Promise<void> {
+    const cleared = clearOrphanConnecting();
+    if (cleared > 0) {
+      logger.info({ cleared }, 'cleared orphan wa rows left in connecting/qr_pending');
+    }
     const rows = listConnected();
     for (const row of rows) {
       try {
@@ -355,6 +386,7 @@ class SessionManager {
 
   async shutdown(): Promise<void> {
     for (const h of this.handles.values()) {
+      h.intentionalClose = true;
       if (h.reconnectTimer) {
         clearTimeout(h.reconnectTimer);
         h.reconnectTimer = null;

@@ -13,6 +13,7 @@ services:
       DATABASE_PATH: /app/backend/data/promitto.db
       SESSIONS_DIR: /app/backend/data/sessions
       LOG_LEVEL: ${LOG_LEVEL:-info}
+      BAILEYS_LOG_LEVEL: ${BAILEYS_LOG_LEVEL:-silent}
       DEFAULT_TIMEZONE: ${DEFAULT_TIMEZONE:-Asia/Jakarta}
       TRUST_PROXY: "true"
     volumes:

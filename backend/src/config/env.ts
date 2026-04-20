@@ -10,6 +10,9 @@ const EnvSchema = z.object({
   LOG_LEVEL: z
     .enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent'])
     .default('info'),
+  BAILEYS_LOG_LEVEL: z
+    .enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent'])
+    .default('silent'),
   DEFAULT_TIMEZONE: z.string().default('Asia/Jakarta'),
   TRUST_PROXY: z
     .enum(['true', 'false'])

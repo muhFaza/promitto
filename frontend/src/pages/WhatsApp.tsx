@@ -135,8 +135,13 @@ export function WhatsApp() {
             )}
 
             {status === 'connecting' && (
-              <div className="flex items-center gap-2 text-sm text-slate-600">
-                <Spinner /> Connecting to WhatsApp…
+              <div className="space-y-3">
+                <div className="flex items-center gap-2 text-sm text-slate-600">
+                  <Spinner /> Connecting to WhatsApp…
+                </div>
+                <Button variant="secondary" onClick={handleDisconnect}>
+                  Cancel
+                </Button>
               </div>
             )}
 

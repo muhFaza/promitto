@@ -1,4 +1,4 @@
-import { eq } from 'drizzle-orm';
+import { eq, inArray } from 'drizzle-orm';
 import { db } from '../../db/client.js';
 import {
   waConnections,
@@ -58,4 +58,16 @@ export function getConnection(userId: string): WaConnection | null {
 
 export function listConnected(): WaConnection[] {
   return db.select().from(waConnections).where(eq(waConnections.status, 'connected')).all();
+}
+
+// Normalize transient statuses left behind by a crash or hard restart.
+// A process that was mid-handshake has no in-memory reconnect loop anymore,
+// so the DB row should reflect reality: disconnected.
+export function clearOrphanConnecting(): number {
+  const res = db
+    .update(waConnections)
+    .set({ status: 'disconnected', lastError: null, updatedAt: new Date() })
+    .where(inArray(waConnections.status, ['connecting', 'qr_pending']))
+    .run();
+  return res.changes;
 }
