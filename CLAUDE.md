@@ -79,6 +79,11 @@ deploy/
 - Auth state dir = `backend/data/sessions/{userId}` with 0700/0600 perms enforced on every creds save.
 - Contact sync is **opportunistic** — `contacts.upsert` and `contacts.update` fire post-pair; no "sync complete" event. Done-detection is a heuristic (debounced quiet window).
 - JIDs use `@s.whatsapp.net`; group JIDs (`@g.us`) are rejected at `isUserJid()`.
+- **WA can close a socket without a statusCode.** `lastDisconnect.error.message === 'disconnected'` with `statusCode === undefined` is common (server-side drop, no 401). Don't interpret this as "retry forever" — we cap at `MAX_RECONNECT_ATTEMPTS = 5`, then transition to `failed` with a readable error.
+- **`reconnectAttempts` must reset on manual `connect()` and `disconnect()`** — otherwise a user hitting the cap can never recover via the UI. The 'open' handler also resets it to 0 on success.
+- **`shutdown()` MUST set `h.intentionalClose = true` before `sock.end()`.** Otherwise Baileys fires `connection: 'close'` → `handleConnectionUpdate` sees `intentionalClose: false` → flips the DB row to `connecting` → on next boot, the user is stuck in a phantom connecting state with no active socket.
+- **`restoreAll()` normalizes orphan rows before restoring.** Any `connecting`/`qr_pending` in DB at boot is a lie (the in-memory handle that was driving it is gone) — `clearOrphanConnecting()` resets them to `disconnected` so the UI matches reality.
+- `BAILEYS_LOG_LEVEL` env var (default `silent`) lets prod surface Baileys' internal socket lifecycle at `info`/`warn` for live diagnostics without rebuilding.
 
 ## Dev (Docker)
 
