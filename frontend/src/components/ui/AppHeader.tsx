@@ -3,7 +3,6 @@ import { Link, useNavigate } from 'react-router-dom';
 import { useAuthStore } from '../../stores/auth';
 import { useWaStore } from '../../stores/wa';
 import { WaStatusDot, WaStatusLabel } from '../WaStatusIndicator';
-import { Button } from './Button';
 
 export function AppHeader() {
   const user = useAuthStore((s) => s.user);
@@ -25,26 +24,48 @@ export function AppHeader() {
   }
 
   return (
-    <header className="border-b border-slate-200 bg-white">
-      <div className="mx-auto flex max-w-4xl items-center justify-between gap-3 p-4">
-        <Link to="/app" className="font-semibold text-slate-900">
-          Promitto
+    <header className="border-b border-rule bg-paper">
+      <div className="mx-auto flex max-w-5xl items-end justify-between gap-4 px-6 py-4">
+        <Link to="/app" className="group block" aria-label="Promitto home">
+          <div className="font-display text-[22px] italic leading-none text-ink transition-colors group-hover:text-accent">
+            Promitto
+          </div>
+          <div className="eyebrow mt-1">scheduled messages</div>
         </Link>
-        <div className="flex items-center gap-3">
+
+        <div className="flex items-center gap-5">
           <Link
             to="/app/wa"
             aria-label={`WhatsApp status: ${status}`}
-            className="flex items-center gap-2 rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs transition hover:border-slate-300 hover:bg-white"
+            className="flex items-center gap-2 border-b border-transparent pb-0.5 transition-colors hover:border-ink"
           >
             <WaStatusDot status={status} />
             <WaStatusLabel status={status} className="hidden sm:inline" />
           </Link>
+
           {user && (
-            <span className="hidden text-xs text-slate-500 md:inline">{user.email}</span>
+            <div className="hidden text-right md:block">
+              <div className="font-mono text-[11px] text-ink-soft">
+                {user.email}
+              </div>
+              <button
+                type="button"
+                onClick={handleLogout}
+                className="eyebrow mt-0.5 transition-colors hover:text-ink"
+              >
+                Log out →
+              </button>
+            </div>
           )}
-          <Button variant="secondary" onClick={handleLogout}>
-            Log out
-          </Button>
+
+          <button
+            type="button"
+            onClick={handleLogout}
+            className="eyebrow transition-colors hover:text-ink md:hidden"
+            aria-label="Log out"
+          >
+            Log out →
+          </button>
         </div>
       </div>
     </header>

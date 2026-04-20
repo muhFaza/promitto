@@ -46,12 +46,31 @@ export function Login() {
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center p-6">
-      <div className="w-full max-w-sm rounded-2xl border border-slate-200 bg-white p-8 shadow-sm">
-        <h1 className="text-2xl font-semibold text-slate-900">Promitto</h1>
-        <p className="mt-1 text-sm text-slate-500">Sign in to continue.</p>
+    <div className="flex min-h-screen flex-col items-center justify-center p-6">
+      <div
+        className="w-full max-w-md animate-fadeInUp"
+        style={{ animationDelay: '0ms' }}
+      >
+        {/* Masthead */}
+        <div className="mb-12 text-center">
+          <div className="eyebrow">self-hosted · promises kept</div>
+          <h1 className="mt-4 font-display text-[72px] italic leading-none tracking-tight text-ink">
+            Promitto
+          </h1>
+          <div className="mt-3 flex items-center justify-center gap-3 text-[12px] text-ink-muted">
+            <span className="h-px w-8 bg-rule" />
+            <span>scheduled whatsapp messages</span>
+            <span className="h-px w-8 bg-rule" />
+          </div>
+        </div>
 
-        <form className="mt-6 space-y-4" onSubmit={handleSubmit} noValidate>
+        <form
+          className="space-y-5 border border-rule bg-paper-raised px-7 py-8"
+          onSubmit={handleSubmit}
+          noValidate
+        >
+          <div className="eyebrow mb-1">Sign in to continue</div>
+
           <Field label="Email">
             <Input
               type="email"
@@ -73,19 +92,26 @@ export function Login() {
           </Field>
 
           {error && (
-            <div className="rounded-md bg-red-50 p-3 text-xs text-red-800" role="alert">
+            <div
+              className="border-l-2 border-accent-warm bg-accent-warm-soft/40 px-3 py-2 text-[12px] text-accent-warm"
+              role="alert"
+            >
               {error}
             </div>
           )}
 
           <Button type="submit" disabled={busy} className="w-full">
-            {busy ? <Spinner /> : 'Sign in'}
+            {busy ? <Spinner /> : 'Sign in →'}
           </Button>
+
+          <p className="border-t border-rule pt-4 text-[12px] text-ink-muted">
+            Forgot your password? There is no reset link — contact your administrator.
+          </p>
         </form>
 
-        <p className="mt-6 text-xs text-slate-500">
-          Forgot your password? Contact your administrator.
-        </p>
+        <div className="mt-8 text-center">
+          <div className="eyebrow">one vps · one container · no saas</div>
+        </div>
       </div>
     </div>
   );

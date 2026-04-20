@@ -13,5 +13,53 @@ body,
 }
 
 body {
-  @apply min-h-screen bg-slate-50 text-slate-900 antialiased;
+  @apply min-h-screen bg-paper font-sans text-ink antialiased;
+  font-feature-settings: 'ss01', 'cv11';
+  background-image:
+    radial-gradient(
+      circle at 0.5px 0.5px,
+      rgba(26, 26, 26, 0.035) 0.5px,
+      transparent 0.5px
+    );
+  background-size: 4px 4px;
+}
+
+@layer base {
+  h1 {
+    @apply font-display text-ink;
+    font-optical-sizing: auto;
+    font-variation-settings: 'opsz' 120, 'SOFT' 50;
+  }
+
+  h2,
+  h3 {
+    @apply font-sans text-ink;
+  }
+
+  /* Make native datetime-local pickers look less clinical on the warm palette. */
+  input[type='datetime-local']::-webkit-calendar-picker-indicator,
+  input[type='date']::-webkit-calendar-picker-indicator,
+  input[type='time']::-webkit-calendar-picker-indicator {
+    opacity: 0.5;
+    cursor: pointer;
+  }
+
+  /* Thin horizontal rule primitive used across pages. */
+  hr {
+    @apply border-t border-rule;
+  }
+}
+
+@layer components {
+  .eyebrow {
+    @apply font-sans text-[10px] font-medium uppercase tracking-caps text-ink-muted;
+  }
+
+  .hairline {
+    @apply border-t border-rule;
+  }
+
+  .ledger-card {
+    @apply border border-rule bg-paper-raised;
+  }
 }

@@ -7,11 +7,12 @@ type Props = ButtonHTMLAttributes<HTMLButtonElement> & { variant?: Variant };
 
 const VARIANTS: Record<Variant, string> = {
   primary:
-    'bg-slate-900 text-white hover:bg-slate-800 disabled:bg-slate-400 disabled:hover:bg-slate-400',
+    'bg-ink text-paper-raised hover:bg-ink-soft disabled:bg-ink-muted disabled:hover:bg-ink-muted',
   secondary:
-    'bg-white text-slate-900 border border-slate-300 hover:bg-slate-50 disabled:text-slate-400 disabled:border-slate-200',
-  danger: 'bg-red-600 text-white hover:bg-red-500 disabled:bg-red-300 disabled:hover:bg-red-300',
-  ghost: 'bg-transparent text-slate-600 hover:bg-slate-100',
+    'bg-paper-raised text-ink border border-rule hover:border-ink hover:bg-paper disabled:text-ink-muted disabled:border-rule',
+  danger:
+    'bg-accent-warm text-paper-raised hover:brightness-95 disabled:bg-accent-warm-soft disabled:text-ink-muted',
+  ghost: 'bg-transparent text-ink-soft hover:bg-paper-deep',
 };
 
 export const Button = forwardRef<HTMLButtonElement, Props>(
@@ -20,7 +21,7 @@ export const Button = forwardRef<HTMLButtonElement, Props>(
       ref={ref}
       type={type}
       className={cn(
-        'inline-flex min-h-[36px] items-center justify-center rounded-md px-3 py-2 text-sm font-medium transition disabled:cursor-not-allowed',
+        'inline-flex min-h-[38px] items-center justify-center rounded-sm px-4 py-2 text-[13px] font-medium tracking-tight transition-colors duration-150 disabled:cursor-not-allowed',
         VARIANTS[variant],
         className,
       )}

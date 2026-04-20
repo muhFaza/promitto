@@ -83,18 +83,24 @@ export function Settings() {
   return (
     <>
       <AppHeader />
-      <main className="mx-auto max-w-2xl space-y-8 p-6">
+      <main className="mx-auto max-w-2xl space-y-12 px-6 pb-24 pt-10">
         <header>
-          <h1 className="text-2xl font-semibold text-slate-900">Settings</h1>
-          <p className="mt-1 text-sm text-slate-500">Profile and security.</p>
+          <div className="eyebrow">Profile · security</div>
+          <h1 className="mt-2 font-display text-4xl italic leading-none text-ink">
+            Settings
+          </h1>
         </header>
 
-        <section className="rounded-xl border border-slate-200 bg-white p-6">
-          <h2 className="text-sm font-semibold text-slate-900">Timezone</h2>
-          <p className="text-xs text-slate-500">
-            Schedules are interpreted in this timezone. Changing it only affects future schedules.
+        <section className="border-y border-rule py-8">
+          <div className="eyebrow">Timezone</div>
+          <h2 className="mt-1 font-display text-2xl italic text-ink">
+            Where does "now" mean now.
+          </h2>
+          <p className="mt-2 max-w-md text-[13px] text-ink-soft">
+            Schedules are interpreted in this timezone. Changing it only affects future
+            schedules — existing ones keep the zone they were created in.
           </p>
-          <form className="mt-4 space-y-4" onSubmit={handleTz}>
+          <form className="mt-6 space-y-4" onSubmit={handleTz}>
             <Field label="IANA timezone">
               <Input
                 type="text"
@@ -114,17 +120,20 @@ export function Settings() {
               type="submit"
               disabled={tzBusy || !tz || tz === user?.timezone}
             >
-              {tzBusy ? <Spinner /> : 'Save timezone'}
+              {tzBusy ? <Spinner /> : 'Save timezone →'}
             </Button>
           </form>
         </section>
 
-        <section className="rounded-xl border border-slate-200 bg-white p-6">
-          <h2 className="text-sm font-semibold text-slate-900">Password</h2>
-          <p className="text-xs text-slate-500">
-            Changing your password revokes all other sessions.
+        <section className="border-b border-rule pb-8">
+          <div className="eyebrow">Password</div>
+          <h2 className="mt-1 font-display text-2xl italic text-ink">
+            Rotate the key.
+          </h2>
+          <p className="mt-2 max-w-md text-[13px] text-ink-soft">
+            Changing your password revokes all other sessions immediately.
           </p>
-          <form className="mt-4 space-y-4" onSubmit={handlePw}>
+          <form className="mt-6 space-y-4" onSubmit={handlePw}>
             <Field label="Current password">
               <Input
                 type="password"
@@ -155,12 +164,15 @@ export function Settings() {
               />
             </Field>
             {pwError && (
-              <div className="rounded-md bg-red-50 p-3 text-xs text-red-800" role="alert">
+              <div
+                className="border-l-2 border-accent-warm bg-accent-warm-soft/40 px-3 py-2 text-[12px] text-accent-warm"
+                role="alert"
+              >
                 {pwError}
               </div>
             )}
             <Button type="submit" disabled={pwBusy}>
-              {pwBusy ? <Spinner /> : 'Change password'}
+              {pwBusy ? <Spinner /> : 'Change password →'}
             </Button>
           </form>
         </section>

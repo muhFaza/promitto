@@ -25,17 +25,20 @@ export function Modal({ open, onClose, title, children }: Props) {
 
   return (
     <div
-      className="fixed inset-0 z-40 flex items-center justify-center bg-slate-900/50 p-4"
+      className="fixed inset-0 z-40 flex items-center justify-center bg-ink/40 p-4 backdrop-blur-[1px]"
       onClick={onClose}
     >
       <div
         role="dialog"
         aria-modal="true"
-        className="w-full max-w-md rounded-xl bg-white p-6 shadow-xl"
+        className="w-full max-w-md animate-fadeInUp border border-rule bg-paper-raised"
         onClick={(e) => e.stopPropagation()}
       >
-        <h2 className="mb-4 text-lg font-semibold text-slate-900">{title}</h2>
-        {children}
+        <div className="border-b border-rule px-6 py-4">
+          <div className="eyebrow">Promitto</div>
+          <h2 className="mt-1 font-display text-xl italic text-ink">{title}</h2>
+        </div>
+        <div className="p-6">{children}</div>
       </div>
     </div>
   );

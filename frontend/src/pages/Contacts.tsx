@@ -119,18 +119,22 @@ export function Contacts() {
   return (
     <>
       <AppHeader />
-      <main className="mx-auto max-w-4xl p-6">
+      <main className="mx-auto max-w-5xl px-6 pb-24 pt-10">
         <header>
-          <h1 className="text-2xl font-semibold text-slate-900">Contacts</h1>
-          <p className="mt-1 text-sm text-slate-500">
-            Synced from WhatsApp + manual entries.
+          <div className="eyebrow">The roster</div>
+          <h1 className="mt-2 font-display text-4xl italic leading-none text-ink">
+            Contacts
+          </h1>
+          <p className="mt-3 text-sm text-ink-soft">
+            Synced from WhatsApp pairing, plus anything you add by hand.
           </p>
         </header>
 
-        <section className="mt-6 rounded-xl border border-slate-200 bg-white p-4">
+        <section className="mt-10 border-y border-rule py-6">
+          <div className="eyebrow mb-4">Add manually</div>
           <form
             onSubmit={handleAdd}
-            className="grid gap-3 sm:grid-cols-[1fr_1fr_auto]"
+            className="grid gap-4 sm:grid-cols-[1fr_1fr_auto] sm:items-end"
           >
             <Field label="Phone">
               <Input
@@ -150,16 +154,16 @@ export function Contacts() {
                 placeholder="Jane Doe"
               />
             </Field>
-            <div className="flex items-end">
+            <div>
               <Button type="submit" disabled={busy} className="w-full sm:w-auto">
-                {busy ? <Spinner /> : 'Add'}
+                {busy ? <Spinner /> : 'Add →'}
               </Button>
             </div>
           </form>
         </section>
 
-        <section className="mt-6">
-          <div className="mb-3 flex items-center justify-between gap-2">
+        <section className="mt-10">
+          <div className="mb-4 flex items-center justify-between gap-4">
             <Input
               type="search"
               placeholder="Search by name or phone…"
@@ -167,41 +171,47 @@ export function Contacts() {
               onChange={(e) => handleSearch(e.target.value)}
               className="max-w-sm"
             />
-            <span className="text-xs text-slate-500">
-              {rows.length} contact{rows.length === 1 ? '' : 's'}
+            <span className="text-[12px] text-ink-muted">
+              {rows.length} {rows.length === 1 ? 'entry' : 'entries'}
             </span>
           </div>
 
-          <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white">
-            {loading ? (
-              <div className="flex items-center justify-center p-12 text-slate-400">
-                <Spinner size={24} />
+          {loading ? (
+            <div className="flex items-center justify-center p-16 text-ink-muted">
+              <Spinner size={24} />
+            </div>
+          ) : rows.length === 0 ? (
+            <div className="border-y border-rule px-6 py-16 text-center">
+              <div className="font-display text-xl italic text-ink">
+                No contacts yet.
               </div>
-            ) : rows.length === 0 ? (
-              <div className="p-6 text-sm text-slate-500">
+              <div className="eyebrow mt-2">
                 {search
-                  ? 'No contacts match your search.'
-                  : 'No contacts yet. Add one above, or connect WhatsApp on the WhatsApp page — synced contacts will appear here.'}
+                  ? 'No matches for your search.'
+                  : 'Add one above, or connect WhatsApp to sync.'}
               </div>
-            ) : (
-              <table className="min-w-full divide-y divide-slate-200 text-sm">
-                <thead className="bg-slate-50">
-                  <tr>
-                    <th className="px-4 py-3 text-left font-medium text-slate-700">Name</th>
-                    <th className="px-4 py-3 text-left font-medium text-slate-700">Phone</th>
-                    <th className="px-4 py-3 text-left font-medium text-slate-700">Source</th>
-                    <th className="px-4 py-3 text-left font-medium text-slate-700">WA</th>
-                    <th className="px-4 py-3 text-right font-medium text-slate-700">
-                      Actions
-                    </th>
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="min-w-full text-sm">
+                <thead>
+                  <tr className="border-b border-rule">
+                    <th className="eyebrow px-4 py-3 text-left">Name</th>
+                    <th className="eyebrow px-4 py-3 text-left">Phone</th>
+                    <th className="eyebrow px-4 py-3 text-left">Source</th>
+                    <th className="eyebrow px-4 py-3 text-left">WA</th>
+                    <th className="eyebrow px-4 py-3 text-right">Actions</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-slate-200">
+                <tbody>
                   {rows.map((c) => (
-                    <tr key={c.id}>
-                      <td className="px-4 py-3 text-slate-900">
+                    <tr
+                      key={c.id}
+                      className="border-b border-rule/60 transition-colors hover:bg-paper-raised"
+                    >
+                      <td className="px-4 py-4 align-top text-ink">
                         {editingId === c.id ? (
-                          <div className="flex gap-2">
+                          <div className="flex flex-wrap gap-2">
                             <Input
                               autoFocus
                               value={editName}
@@ -235,13 +245,15 @@ export function Contacts() {
                           c.displayName
                         )}
                       </td>
-                      <td className="px-4 py-3 font-mono text-slate-600">{c.phone}</td>
-                      <td className="px-4 py-3">
+                      <td className="px-4 py-4 align-top font-mono text-[12px] text-ink-soft">
+                        {c.phone}
+                      </td>
+                      <td className="px-4 py-4 align-top">
                         <Badge tone={c.source === 'synced' ? 'info' : 'neutral'}>
                           {c.source}
                         </Badge>
                       </td>
-                      <td className="px-4 py-3">
+                      <td className="px-4 py-4 align-top">
                         {c.verifiedOnWhatsapp === true ? (
                           <Badge tone="success">verified</Badge>
                         ) : c.verifiedOnWhatsapp === false ? (
@@ -250,11 +262,11 @@ export function Contacts() {
                           <Badge tone="warning">unverified</Badge>
                         )}
                       </td>
-                      <td className="px-4 py-3 text-right">
+                      <td className="px-4 py-4 text-right align-top">
                         <div className="flex justify-end gap-2">
                           {editingId !== c.id && (
                             <Button
-                              variant="secondary"
+                              variant="ghost"
                               onClick={() => {
                                 setEditingId(c.id);
                                 setEditName(c.displayName);
@@ -263,7 +275,10 @@ export function Contacts() {
                               Rename
                             </Button>
                           )}
-                          <Button variant="danger" onClick={() => void handleDelete(c)}>
+                          <Button
+                            variant="ghost"
+                            onClick={() => void handleDelete(c)}
+                          >
                             Delete
                           </Button>
                         </div>
@@ -272,8 +287,8 @@ export function Contacts() {
                   ))}
                 </tbody>
               </table>
-            )}
-          </div>
+            </div>
+          )}
         </section>
       </main>
     </>

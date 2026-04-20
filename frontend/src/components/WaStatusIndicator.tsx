@@ -6,26 +6,26 @@ type Tone = 'live' | 'pending' | 'idle' | 'danger';
 type Meta = { label: string; tone: Tone };
 
 const META: Record<WaStatus, Meta> = {
-  connected: { label: 'Connected', tone: 'live' },
-  connecting: { label: 'Connecting', tone: 'pending' },
+  connected: { label: 'Live', tone: 'live' },
+  connecting: { label: 'Linking', tone: 'pending' },
   qr_pending: { label: 'Scan QR', tone: 'pending' },
-  disconnected: { label: 'Disconnected', tone: 'idle' },
+  disconnected: { label: 'Idle', tone: 'idle' },
   logged_out: { label: 'Logged out', tone: 'idle' },
   failed: { label: 'Failed', tone: 'danger' },
 };
 
 const DOT: Record<Tone, string> = {
-  live: 'bg-emerald-500',
-  pending: 'bg-amber-500',
-  idle: 'bg-slate-400',
-  danger: 'bg-red-500',
+  live: 'bg-accent',
+  pending: 'bg-amber-soft',
+  idle: 'bg-ink-muted',
+  danger: 'bg-accent-warm',
 };
 
 const TEXT: Record<Tone, string> = {
-  live: 'text-emerald-700',
-  pending: 'text-amber-700',
-  idle: 'text-slate-600',
-  danger: 'text-red-700',
+  live: 'text-accent',
+  pending: 'text-amber-soft',
+  idle: 'text-ink-muted',
+  danger: 'text-accent-warm',
 };
 
 type DotProps = { status: WaStatus; size?: 'sm' | 'md' };
@@ -33,20 +33,18 @@ type DotProps = { status: WaStatus; size?: 'sm' | 'md' };
 export function WaStatusDot({ status, size = 'sm' }: DotProps) {
   const tone = META[status].tone;
   const dim = size === 'md' ? 'h-2.5 w-2.5' : 'h-2 w-2';
-  const pulse = tone === 'pending';
+  const pulse = tone === 'pending' || tone === 'live';
   return (
     <span className={cn('relative inline-flex', dim)} aria-hidden>
       {pulse && (
         <span
           className={cn(
-            'absolute inline-flex h-full w-full animate-ping rounded-full opacity-60',
+            'absolute inline-flex h-full w-full animate-ping rounded-full opacity-50',
             DOT[tone],
           )}
         />
       )}
-      <span
-        className={cn('relative inline-flex rounded-full', dim, DOT[tone])}
-      />
+      <span className={cn('relative inline-flex rounded-full', dim, DOT[tone])} />
     </span>
   );
 }
@@ -55,5 +53,15 @@ type LabelProps = { status: WaStatus; className?: string };
 
 export function WaStatusLabel({ status, className }: LabelProps) {
   const { label, tone } = META[status];
-  return <span className={cn('font-medium', TEXT[tone], className)}>{label}</span>;
+  return (
+    <span
+      className={cn(
+        'text-[10px] font-medium uppercase tracking-wide',
+        TEXT[tone],
+        className,
+      )}
+    >
+      {label}
+    </span>
+  );
 }

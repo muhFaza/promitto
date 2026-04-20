@@ -2,32 +2,29 @@ import QRCode from 'qrcode';
 import { useEffect, useRef } from 'react';
 import { ApiError } from '../api/client';
 import type { WaStatus } from '../api/wa';
+import { WaStatusDot } from '../components/WaStatusIndicator';
 import { AppHeader } from '../components/ui/AppHeader';
-import { Badge } from '../components/ui/Badge';
 import { Button } from '../components/ui/Button';
 import { Spinner } from '../components/ui/Spinner';
 import { useUiStore } from '../stores/ui';
 import { useWaStore } from '../stores/wa';
 
-const STATUS_TONES: Record<
-  WaStatus,
-  'neutral' | 'success' | 'warning' | 'danger' | 'info'
-> = {
-  disconnected: 'neutral',
-  connecting: 'info',
-  qr_pending: 'warning',
-  connected: 'success',
-  logged_out: 'neutral',
-  failed: 'danger',
+const STATUS_LABELS: Record<WaStatus, string> = {
+  disconnected: 'Disconnected',
+  connecting: 'Linking',
+  qr_pending: 'Awaiting scan',
+  connected: 'Connected',
+  logged_out: 'Logged out',
+  failed: 'Failed',
 };
 
-const STATUS_LABELS: Record<WaStatus, string> = {
-  disconnected: 'disconnected',
-  connecting: 'connecting',
-  qr_pending: 'awaiting QR scan',
-  connected: 'connected',
-  logged_out: 'logged out',
-  failed: 'failed',
+const STATUS_SUBS: Record<WaStatus, string> = {
+  disconnected: 'No active session.',
+  connecting: 'Negotiating with WhatsApp servers…',
+  qr_pending: 'Scan the code below with your phone.',
+  connected: 'Messages will dispatch on schedule.',
+  logged_out: 'The session ended on the phone side.',
+  failed: 'Something went wrong.',
 };
 
 export function WhatsApp() {
@@ -56,6 +53,7 @@ export function WhatsApp() {
       errorCorrectionLevel: 'L',
       margin: 1,
       width: 256,
+      color: { dark: '#1A1A1A', light: '#FBF8F1' },
     }).catch(() => {});
   }, [latestQr]);
 
@@ -101,43 +99,57 @@ export function WhatsApp() {
   return (
     <>
       <AppHeader />
-      <main className="mx-auto max-w-2xl p-6">
+      <main className="mx-auto max-w-2xl px-6 pb-24 pt-10">
         <header>
-          <h1 className="text-2xl font-semibold text-slate-900">WhatsApp</h1>
-          <p className="mt-1 text-sm text-slate-500">Pair one number per user.</p>
+          <div className="eyebrow">Pairing</div>
+          <h1 className="mt-2 font-display text-4xl italic leading-none text-ink">
+            WhatsApp
+          </h1>
+          <p className="mt-3 text-sm text-ink-soft">
+            One number per user. Auth state is server-side and survives restarts.
+          </p>
         </header>
 
-        <section className="mt-8 rounded-xl border border-slate-200 bg-white p-6">
-          <div className="flex items-center justify-between gap-4">
-            <div>
-              <div className="text-xs text-slate-500">Status</div>
-              <div className="mt-1">
-                <Badge tone={STATUS_TONES[status]}>{STATUS_LABELS[status]}</Badge>
+        <section className="mt-10 border-y border-rule py-8">
+          <div className="flex items-start justify-between gap-4">
+            <div className="flex items-start gap-4">
+              <span className="mt-1.5 inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-rule bg-paper-raised">
+                <WaStatusDot status={status} size="md" />
+              </span>
+              <div>
+                <div className="font-display text-2xl italic leading-tight text-ink">
+                  {STATUS_LABELS[status]}
+                </div>
+                <div className="mt-1 text-[13px] text-ink-soft">
+                  {STATUS_SUBS[status]}
+                </div>
               </div>
             </div>
             {jid && (
               <div className="text-right">
-                <div className="text-xs text-slate-500">Paired number</div>
-                <div className="mt-1 font-mono text-sm text-slate-900">{jid}</div>
+                <div className="eyebrow">Paired</div>
+                <div className="mt-1 font-mono text-[12px] text-ink-soft">
+                  {jid}
+                </div>
               </div>
             )}
           </div>
 
           {lastError && status !== 'connected' && (
-            <div className="mt-4 rounded-md bg-red-50 p-3 text-xs text-red-800">
+            <div className="mt-5 border-l-2 border-accent-warm bg-accent-warm-soft/40 px-4 py-2 text-[12px] text-accent-warm">
               {lastError}
             </div>
           )}
 
           <div className="mt-6">
             {status === 'disconnected' && (
-              <Button onClick={handleConnect}>Connect WhatsApp</Button>
+              <Button onClick={handleConnect}>Connect WhatsApp →</Button>
             )}
 
             {status === 'connecting' && (
-              <div className="space-y-3">
-                <div className="flex items-center gap-2 text-sm text-slate-600">
-                  <Spinner /> Connecting to WhatsApp…
+              <div className="flex flex-wrap items-center gap-3">
+                <div className="flex items-center gap-2 text-[13px] text-ink-soft">
+                  <Spinner /> Connecting…
                 </div>
                 <Button variant="secondary" onClick={handleDisconnect}>
                   Cancel
@@ -146,16 +158,32 @@ export function WhatsApp() {
             )}
 
             {status === 'qr_pending' && (
-              <div className="space-y-4">
-                <p className="text-sm text-slate-600">
-                  Open WhatsApp on your phone → Settings → Linked Devices → Link a device →
-                  scan this code.
-                </p>
-                <div className="inline-block rounded-lg border border-slate-200 bg-white p-3">
+              <div className="space-y-5">
+                <ol className="space-y-1.5 text-[13px] text-ink-soft">
+                  <li>
+                    <span className="mr-2 font-mono text-[11px] text-ink-muted">
+                      01
+                    </span>
+                    Open WhatsApp on your phone.
+                  </li>
+                  <li>
+                    <span className="mr-2 font-mono text-[11px] text-ink-muted">
+                      02
+                    </span>
+                    Settings → Linked Devices → Link a device.
+                  </li>
+                  <li>
+                    <span className="mr-2 font-mono text-[11px] text-ink-muted">
+                      03
+                    </span>
+                    Scan the code below.
+                  </li>
+                </ol>
+                <div className="inline-block border border-rule bg-paper-raised p-4">
                   {latestQr ? (
                     <canvas ref={canvasRef} aria-label="WhatsApp pairing QR code" />
                   ) : (
-                    <div className="flex h-[256px] w-[256px] items-center justify-center text-slate-400">
+                    <div className="flex h-[256px] w-[256px] items-center justify-center text-ink-muted">
                       <Spinner size={24} />
                     </div>
                   )}
@@ -180,14 +208,13 @@ export function WhatsApp() {
             )}
 
             {(status === 'logged_out' || status === 'failed') && (
-              <Button onClick={handleConnect}>Connect again</Button>
+              <Button onClick={handleConnect}>Connect again →</Button>
             )}
           </div>
         </section>
 
-        <p className="mt-4 text-xs text-slate-500">
-          One WhatsApp number per user. Auth state is stored server-side and survives
-          restarts.
+        <p className="mt-6 text-[12px] text-ink-muted">
+          One WhatsApp number per user. Auth state persists across container restarts.
         </p>
       </main>
     </>

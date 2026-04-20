@@ -68,14 +68,14 @@ export function ContactPicker({
   if (value) {
     return (
       <div
-        className="flex items-center justify-between gap-3 rounded-md border border-slate-300 bg-slate-50 px-3 py-2"
+        className="flex items-center justify-between gap-3 rounded-sm border border-rule bg-paper-deep px-3 py-2"
         aria-label="Selected recipient"
       >
         <div className="min-w-0">
-          <div className="truncate text-sm font-medium text-slate-900">
+          <div className="truncate text-sm font-medium text-ink">
             {value.displayName}
           </div>
-          <div className="truncate font-mono text-xs text-slate-500">
+          <div className="truncate font-mono text-[11px] text-ink-muted">
             {value.phone}
           </div>
         </div>
@@ -85,10 +85,10 @@ export function ContactPicker({
             onChange(null);
             setTimeout(() => inputRef.current?.focus(), 0);
           }}
-          className="shrink-0 rounded-md border border-slate-300 bg-white px-2 py-1 text-xs font-medium text-slate-700 hover:bg-slate-100 focus:outline-none focus:ring-1 focus:ring-slate-500"
+          className="eyebrow shrink-0 border-b border-transparent pb-0.5 transition-colors hover:border-ink hover:text-ink focus:outline-none"
           aria-label="Change recipient"
         >
-          Change
+          Change →
         </button>
       </div>
     );
@@ -112,14 +112,14 @@ export function ContactPicker({
       {open && (
         <div
           id={listId}
-          className="absolute left-0 right-0 top-full z-20 mt-1 max-h-72 overflow-y-auto rounded-md border border-slate-200 bg-white shadow-lg"
+          className="absolute left-0 right-0 top-full z-20 mt-1 max-h-72 overflow-y-auto rounded-sm border border-rule bg-paper-raised shadow-hairline"
           role="listbox"
         >
           {loading && (
-            <div className="px-3 py-2 text-xs text-slate-400">Searching…</div>
+            <div className="eyebrow px-3 py-2">Searching…</div>
           )}
           {!loading && options.length === 0 && (
-            <div className="px-3 py-3 text-sm text-slate-500">No matches.</div>
+            <div className="px-3 py-3 text-sm text-ink-muted">No matches.</div>
           )}
           {options.map((c) => (
             <button
@@ -127,14 +127,14 @@ export function ContactPicker({
               type="button"
               role="option"
               aria-selected={false}
-              className="block w-full px-3 py-2 text-left text-sm hover:bg-slate-50"
+              className="block w-full border-b border-rule/60 px-3 py-2 text-left text-sm transition-colors last:border-b-0 hover:bg-paper-deep"
               onPointerDown={(e) => {
                 e.preventDefault();
                 selectContact(c);
               }}
             >
-              <div className="font-medium text-slate-900">{c.displayName}</div>
-              <div className="font-mono text-xs text-slate-500">{c.phone}</div>
+              <div className="font-medium text-ink">{c.displayName}</div>
+              <div className="font-mono text-[11px] text-ink-muted">{c.phone}</div>
             </button>
           ))}
         </div>

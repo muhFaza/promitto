@@ -36,8 +36,17 @@ backend/src/
 
 frontend/src/
   main.tsx, App.tsx        routes under /app, RequireAuth wrapper
-  pages/                   Login, Dashboard, WhatsApp, Contacts, Schedule, Settings, Admin
-  components/              ContactPicker (single-select), InstallButton, RequireAuth, ui/*
+  pages/
+    Login                  Fraunces-masthead sign-in
+    Dashboard              primary compose surface — masthead + WA card + ComposeScheduleForm + "next up" + nav rail
+    WhatsApp               pairing / QR / disconnect
+    Contacts, Settings, Admin
+    Schedule               list-only (Upcoming / Recurring / History / Failed). Compose lives on Dashboard; this page has a "+ Compose" link back to `/app#compose`.
+  components/
+    ComposeScheduleForm    shared compose form (recipient + message + once/recurring + cron preview + submit)
+    ContactPicker          single-select autocomplete; uses contacts.list with search
+    WaStatusIndicator      WaStatusDot + WaStatusLabel (AppHeader + Dashboard)
+    InstallButton, RequireAuth, ui/*
   stores/                  auth, contacts, schedule, ui, wa  (Zustand v5 curried form)
   api/                     client.ts, sse.ts + per-module wrappers
   lib/                     dates (luxon), cn, types
@@ -47,6 +56,20 @@ deploy/
   entrypoint.sh            migrate → node dist/main.js
   backup.sh                tarball backend/data to ~/promitto-backups (UTC stamp)
 ```
+
+## Frontend design system
+
+Aesthetic: **"quiet utility ledger"** — warm paper + ink, deliberate typography, hairline borders instead of cards-with-shadows. Keep it that way.
+
+- **Palette** (`tailwind.config.js`): `paper` (cream `#F5F1E8`) / `paper-raised` / `ink` (near-black) / `ink-soft` / `ink-muted` / `rule` (warm hairline) / `accent` (olive `#5C6B3E`, "live/success") / `accent-warm` (terracotta `#A8583A`, "destructive/failed") / `amber-soft` (warnings). No `slate-*`, no `emerald-*`, no `red-*` — use the tokens.
+- **Fonts** (loaded from Google Fonts in `index.html`):
+  - `font-display` → **Fraunces** (variable serif, italic for H1/H2/section titles)
+  - `font-sans` → **Geist** (body, labels, buttons)
+  - `font-mono` → **Geist Mono** (identifiers only)
+- **Mono is reserved for machine-generated data**: timestamps, JIDs, phone numbers, cron expressions, emails. **Do not use mono for prose, hints, error text, badge labels, or tab labels** — it reads like typewriter noise.
+- **Headings** use Fraunces italic. Section eyebrows use the `.eyebrow` utility in `index.css` (Geist uppercase tracking-caps, sans). Do not invent new heading styles.
+- **Structure**: hairline rules (`border-rule`, `<hr>`) separate sections. Cards = `.ledger-card` (border + paper-raised bg) or inline `border border-rule bg-paper-raised`. No rounded-xl / drop-shadow defaults.
+- **Motion**: CSS-only (`animate-fadeInUp` for page entrances, `animate-ping` on pending WA status). Don't pull in framer-motion.
 
 ## Key constraints (don't expand scope)
 
