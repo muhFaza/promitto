@@ -20,11 +20,27 @@ export function ContactPicker({
   const [loading, setLoading] = useState(false);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const containerRef = useRef<HTMLDivElement | null>(null);
   const listId = useId();
 
   useEffect(() => {
     if (!value) setInput('');
   }, [value]);
+
+  // Close the dropdown on pointerdown outside the container. Replaces a
+  // blur-based close that raced touch events on iOS Safari — blur would
+  // fire before the option's onClick could register, unmounting the
+  // dropdown and re-opening it on refocus.
+  useEffect(() => {
+    if (!open) return;
+    function onDocPointerDown(e: PointerEvent) {
+      const el = containerRef.current;
+      if (!el) return;
+      if (!el.contains(e.target as Node)) setOpen(false);
+    }
+    document.addEventListener('pointerdown', onDocPointerDown);
+    return () => document.removeEventListener('pointerdown', onDocPointerDown);
+  }, [open]);
 
   function query(v: string) {
     if (debounceRef.current) clearTimeout(debounceRef.current);
@@ -41,6 +57,12 @@ export function ContactPicker({
   function handleInput(v: string) {
     setInput(v);
     query(v);
+  }
+
+  function selectContact(c: Contact) {
+    onChange(c);
+    setInput('');
+    setOpen(false);
   }
 
   if (value) {
@@ -73,7 +95,7 @@ export function ContactPicker({
   }
 
   return (
-    <div className="relative">
+    <div ref={containerRef} className="relative">
       <Input
         ref={inputRef}
         type="search"
@@ -83,7 +105,6 @@ export function ContactPicker({
           setOpen(true);
           if (options.length === 0) query(input);
         }}
-        onBlur={() => setTimeout(() => setOpen(false), 150)}
         onChange={(e) => handleInput(e.target.value)}
         aria-controls={listId}
         aria-autocomplete="list"
@@ -107,11 +128,9 @@ export function ContactPicker({
               role="option"
               aria-selected={false}
               className="block w-full px-3 py-2 text-left text-sm hover:bg-slate-50"
-              onMouseDown={(e) => e.preventDefault()}
-              onClick={() => {
-                onChange(c);
-                setInput('');
-                setOpen(false);
+              onPointerDown={(e) => {
+                e.preventDefault();
+                selectContact(c);
               }}
             >
               <div className="font-medium text-slate-900">{c.displayName}</div>
