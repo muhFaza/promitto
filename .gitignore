@@ -1,0 +1,30 @@
+# deps
+node_modules/
+.pnpm-store/
+
+# build output
+dist/
+build/
+
+# env
+.env
+.env.local
+*.env
+
+# data (sqlite + baileys auth state)
+backend/data/
+
+# logs
+*.log
+logs/
+deploy/logs/
+
+# editors / OS
+.DS_Store
+.vscode/
+.idea/
+Thumbs.db
+
+# misc
+*.tsbuildinfo
+coverage/

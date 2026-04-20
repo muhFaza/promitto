@@ -1,0 +1,41 @@
+{
+  "version": "7",
+  "dialect": "sqlite",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "6",
+      "when": 1776593301640,
+      "tag": "0000_noisy_adam_warlock",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1776606161961,
+      "tag": "0001_mute_mad_thinker",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1776607893393,
+      "tag": "0002_fast_mikhail_rasputin",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1776610193643,
+      "tag": "0003_purple_lake",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1776613490906,
+      "tag": "0004_chunky_triathlon",
+      "breakpoints": true
+    }
+  ]
+}
