@@ -15,7 +15,12 @@ type WaState = {
   disconnect: () => Promise<void>;
   logout: () => Promise<void>;
   subscribe: () => () => void;
+  reset: () => void;
 };
+
+// Module-scoped handle to the active SSE connection, so `reset()` can close it
+// without the caller needing to hold the unsub closure.
+let activeSseUnsub: (() => void) | null = null;
 
 export const useWaStore = create<WaState>()((set, get) => ({
   status: 'disconnected',
@@ -73,9 +78,25 @@ export const useWaStore = create<WaState>()((set, get) => ({
         }
       },
     });
+    activeSseUnsub = unsub;
     return () => {
       unsub();
+      if (activeSseUnsub === unsub) activeSseUnsub = null;
       set({ subscribed: false });
     };
+  },
+
+  reset() {
+    if (activeSseUnsub) {
+      activeSseUnsub();
+      activeSseUnsub = null;
+    }
+    set({
+      status: 'disconnected',
+      jid: null,
+      lastError: null,
+      latestQr: null,
+      subscribed: false,
+    });
   },
 }));

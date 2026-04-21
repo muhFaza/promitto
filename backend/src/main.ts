@@ -13,32 +13,62 @@ const server = app.listen(env.PORT, () => {
   logger.info({ port: env.PORT, env: env.NODE_ENV }, 'Promitto backend listening');
 });
 
-sessionManager.restoreAll().catch((err: unknown) => {
-  logger.error({ err }, 'wa restoreAll failed');
-});
+const BOOT_RESTORE_TIMEOUT_MS = 30_000;
+const SHUTDOWN_TIMEOUT_MS = 30_000;
 
-schedulerPoller.start();
+void (async () => {
+  try {
+    await Promise.race([
+      sessionManager.restoreAll(),
+      new Promise<void>((resolve) =>
+        setTimeout(() => {
+          logger.warn(
+            { timeoutMs: BOOT_RESTORE_TIMEOUT_MS },
+            'wa restoreAll timed out; poller will skip unready users',
+          );
+          resolve();
+        }, BOOT_RESTORE_TIMEOUT_MS),
+      ),
+    ]);
+  } catch (err) {
+    logger.error({ err }, 'wa restoreAll failed');
+  }
+  schedulerPoller.start();
+})();
 
 async function shutdown(signal: string): Promise<void> {
   logger.info({ signal }, 'Shutdown signal received');
-  try {
-    await schedulerPoller.stop();
-  } catch (err) {
-    logger.error({ err }, 'schedulerPoller.stop failed');
-  }
-  try {
-    await sessionManager.shutdown();
-  } catch (err) {
-    logger.error({ err }, 'sessionManager.shutdown failed');
-  }
-  server.close((err) => {
-    if (err) {
-      logger.error({ err }, 'Error during server close');
-      process.exit(1);
+
+  const work = (async (): Promise<void> => {
+    try {
+      await schedulerPoller.stop();
+    } catch (err) {
+      logger.error({ err }, 'schedulerPoller.stop failed');
     }
-    logger.info('Closed cleanly.');
-    process.exit(0);
-  });
+    try {
+      await sessionManager.shutdown();
+    } catch (err) {
+      logger.error({ err }, 'sessionManager.shutdown failed');
+    }
+    await new Promise<void>((resolve) => {
+      server.close((err) => {
+        if (err) logger.error({ err }, 'Error during server close');
+        resolve();
+      });
+    });
+  })();
+
+  const timeout = new Promise<'timeout'>((resolve) =>
+    setTimeout(() => resolve('timeout'), SHUTDOWN_TIMEOUT_MS),
+  );
+
+  const outcome = await Promise.race([work.then(() => 'ok' as const), timeout]);
+  if (outcome === 'timeout') {
+    logger.error({ timeoutMs: SHUTDOWN_TIMEOUT_MS }, 'shutdown timed out, forcing exit');
+    process.exit(1);
+  }
+  logger.info('Closed cleanly.');
+  process.exit(0);
 }
 
 process.on('SIGTERM', () => {

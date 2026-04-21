@@ -19,6 +19,7 @@ export const sqlite = new Database(dbPath);
 sqlite.pragma('journal_mode = WAL');
 sqlite.pragma('foreign_keys = ON');
 sqlite.pragma('synchronous = NORMAL');
+sqlite.pragma('busy_timeout = 5000');
 
 for (const p of [dbPath, `${dbPath}-wal`, `${dbPath}-shm`]) {
   try {
