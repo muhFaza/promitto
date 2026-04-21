@@ -49,6 +49,10 @@ type Handle = {
   reconnectAttempts: number;
   connectPromise: Promise<void> | null;
   disconnectPromise: Promise<void> | null;
+  // In-flight openSocket() call. shutdown() awaits this so a SIGTERM during
+  // restoreAll() can't race openSocket's `h.sock = sock` assignment and leak
+  // a live Baileys connection.
+  openPromise: Promise<void> | null;
   syncDebounceTimer: NodeJS.Timeout | null;
   pendingContacts: Map<string, PendingContact>;
   intentionalClose: boolean;
@@ -101,6 +105,7 @@ class SessionManager {
       reconnectAttempts: 0,
       connectPromise: null,
       disconnectPromise: null,
+      openPromise: null,
       syncDebounceTimer: null,
       pendingContacts: new Map(),
       intentionalClose: false,
@@ -139,8 +144,28 @@ class SessionManager {
       }
     }
 
-    if (h.sock && h.status === 'connected') return;
+    // Already in a productive state — no new socket needed. Gating on status
+    // (not just connectPromise) closes the race where a caller arrives after
+    // runConnect's finally-block nulled connectPromise but the handle is
+    // already driving a live socket, which would otherwise spawn a duplicate.
+    if (h.status === 'connected' || h.status === 'qr_pending') return;
+
     if (h.connectPromise) return h.connectPromise;
+
+    // Status is 'connecting' without a live connectPromise — runConnect's
+    // 15s settle guard resolved but the socket never transitioned. Wait for
+    // the next settle event rather than racing a second Baileys socket.
+    if (h.status === 'connecting') {
+      return new Promise<void>((resolve) => {
+        const handler = (ev: SessionEvent): void => {
+          if (ev.type === 'status' && ev.value !== 'connecting') {
+            h.events.off('event', handler);
+            resolve();
+          }
+        };
+        h.events.on('event', handler);
+      });
+    }
 
     h.reconnectAttempts = 0;
     h.connectPromise = this.runConnect(h);
@@ -179,7 +204,18 @@ class SessionManager {
     });
   }
 
-  private async openSocket(h: Handle): Promise<void> {
+  // Public entrypoint: tracks the in-flight open so shutdown() can await it
+  // and avoid leaking a Baileys socket if SIGTERM arrives mid-handshake.
+  private openSocket(h: Handle): Promise<void> {
+    if (h.openPromise) return h.openPromise;
+    const promise = this.runOpenSocket(h).finally(() => {
+      if (h.openPromise === promise) h.openPromise = null;
+    });
+    h.openPromise = promise;
+    return promise;
+  }
+
+  private async runOpenSocket(h: Handle): Promise<void> {
     h.intentionalClose = false;
     if (h.reconnectTimer) {
       clearTimeout(h.reconnectTimer);
@@ -470,11 +506,32 @@ class SessionManager {
   }
 
   async shutdown(): Promise<void> {
+    // Mark everything intentional first so any in-flight openSocket that
+    // settles after this point won't trigger a reconnect loop via the close
+    // handler.
+    const inFlightOpens: Promise<void>[] = [];
     for (const h of this.handles.values()) {
       h.intentionalClose = true;
       if (h.reconnectTimer) {
         clearTimeout(h.reconnectTimer);
         h.reconnectTimer = null;
+      }
+      if (h.openPromise) inFlightOpens.push(h.openPromise);
+    }
+
+    // Wait for any openSocket() calls that are mid-handshake so their
+    // `h.sock = sock` assignment happens before we try to close sockets.
+    if (inFlightOpens.length > 0) {
+      await Promise.allSettled(inFlightOpens);
+    }
+
+    for (const h of this.handles.values()) {
+      // Explicit: flushPendingContacts clears this today, but the invariant
+      // shouldn't depend on that — a dangling timer firing during exit would
+      // try to write to a closing DB handle.
+      if (h.syncDebounceTimer) {
+        clearTimeout(h.syncDebounceTimer);
+        h.syncDebounceTimer = null;
       }
       this.flushPendingContacts(h);
       if (h.sock) {

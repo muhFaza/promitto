@@ -8,7 +8,7 @@ import {
 import { env } from '../../config/env.js';
 import { sqlite } from '../../db/client.js';
 import { signSessionId } from '../../lib/cookie-signer.js';
-import { computeCsrfToken } from '../../lib/csrf.js';
+import { setCsrfCookie } from '../../lib/csrf.js';
 import { errors } from '../../lib/errors.js';
 import { verifyPassword } from '../../lib/password.js';
 import { serializeUser } from '../../lib/user.js';
@@ -67,13 +67,7 @@ authRouter.post('/login', async (req, res, next) => {
       maxAge: SESSION_DURATION_MS,
     });
 
-    res.cookie(CSRF_COOKIE_NAME, computeCsrfToken(session.id), {
-      httpOnly: false,
-      sameSite: 'lax',
-      secure: env.NODE_ENV === 'production',
-      path: '/',
-      maxAge: SESSION_DURATION_MS,
-    });
+    setCsrfCookie(res, session.id);
 
     res.json(serializeUser(user));
   } catch (err) {

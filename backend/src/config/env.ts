@@ -5,6 +5,10 @@ const EnvSchema = z.object({
   PORT: z.coerce.number().int().positive().default(3000),
   APP_URL: z.string().url().default('http://localhost:3000'),
   SESSION_SECRET: z.string().min(32, 'SESSION_SECRET must be at least 32 characters'),
+  CSRF_SECRET: z
+    .string()
+    .min(32, 'CSRF_SECRET must be at least 32 characters')
+    .optional(),
   DATABASE_PATH: z.string().default('./data/promitto.db'),
   SESSIONS_DIR: z.string().default('./data/sessions'),
   LOG_LEVEL: z
@@ -20,7 +24,8 @@ const EnvSchema = z.object({
     .transform((v) => v === 'true'),
 });
 
-export type Env = z.infer<typeof EnvSchema>;
+type ParsedEnv = z.infer<typeof EnvSchema>;
+export type Env = Omit<ParsedEnv, 'CSRF_SECRET'> & { CSRF_SECRET: string };
 
 const parsed = EnvSchema.safeParse(process.env);
 if (!parsed.success) {
@@ -29,4 +34,10 @@ if (!parsed.success) {
   process.exit(1);
 }
 
-export const env: Env = parsed.data;
+// CSRF_SECRET is optional; when unset it falls back to SESSION_SECRET so existing
+// deployments keep working. Setting a distinct value separates the HMAC keyspace
+// from cookie signing and invalidates outstanding CSRF tokens on next login.
+export const env: Env = {
+  ...parsed.data,
+  CSRF_SECRET: parsed.data.CSRF_SECRET ?? parsed.data.SESSION_SECRET,
+};
