@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { ApiError } from '../api/client';
 import * as schedulerApi from '../api/scheduler';
+import { EditScheduleModal } from '../components/EditScheduleModal';
 import { AppHeader } from '../components/ui/AppHeader';
 import { Badge } from '../components/ui/Badge';
 import { Button } from '../components/ui/Button';
@@ -28,6 +29,7 @@ export function Schedule() {
   const [scheduled, setScheduled] = useState<ScheduledMessage[]>([]);
   const [sent, setSent] = useState<SentMessage[]>([]);
   const [listLoading, setListLoading] = useState(false);
+  const [editingMessage, setEditingMessage] = useState<ScheduledMessage | null>(null);
 
   const tz = user?.timezone ?? 'UTC';
 
@@ -134,6 +136,7 @@ export function Schedule() {
               <ScheduledTable
                 rows={scheduledItems}
                 tz={tz}
+                onEdit={setEditingMessage}
                 onCancel={handleCancel}
               />
             )
@@ -147,6 +150,15 @@ export function Schedule() {
           )}
         </section>
       </main>
+      <EditScheduleModal
+          message={editingMessage}
+          timezone={tz}
+          onClose={() => setEditingMessage(null)}
+          onSaved={() => {
+            setEditingMessage(null);
+            void loadTab(tab);
+          }}
+        />
     </>
   );
 }
@@ -163,10 +175,12 @@ function EmptyState({ label, sub }: { label: string; sub: string }) {
 function ScheduledTable({
   rows,
   tz,
+  onEdit,
   onCancel,
 }: {
   rows: ScheduledMessage[];
   tz: string;
+  onEdit: (row: ScheduledMessage) => void;
   onCancel: (id: string) => void;
 }) {
   return (
@@ -225,9 +239,14 @@ function ScheduledTable({
                 )}
               </td>
               <td className="px-4 py-4 text-right align-top">
-                <Button variant="ghost" onClick={() => onCancel(r.id)}>
-                  Cancel
-                </Button>
+                <div className="flex items-center justify-end gap-2">
+                  <Button variant="ghost" onClick={() => onEdit(r)}>
+                    Edit
+                  </Button>
+                  <Button variant="ghost" onClick={() => onCancel(r.id)}>
+                    Cancel
+                  </Button>
+                </div>
               </td>
             </tr>
           ))}
