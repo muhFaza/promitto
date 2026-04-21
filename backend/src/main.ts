@@ -17,21 +17,24 @@ const BOOT_RESTORE_TIMEOUT_MS = 30_000;
 const SHUTDOWN_TIMEOUT_MS = 30_000;
 
 void (async () => {
+  let restoreTimer: NodeJS.Timeout | undefined;
   try {
     await Promise.race([
       sessionManager.restoreAll(),
-      new Promise<void>((resolve) =>
-        setTimeout(() => {
+      new Promise<void>((resolve) => {
+        restoreTimer = setTimeout(() => {
           logger.warn(
             { timeoutMs: BOOT_RESTORE_TIMEOUT_MS },
             'wa restoreAll timed out; poller will skip unready users',
           );
           resolve();
-        }, BOOT_RESTORE_TIMEOUT_MS),
-      ),
+        }, BOOT_RESTORE_TIMEOUT_MS);
+      }),
     ]);
   } catch (err) {
     logger.error({ err }, 'wa restoreAll failed');
+  } finally {
+    if (restoreTimer) clearTimeout(restoreTimer);
   }
   schedulerPoller.start();
 })();
@@ -58,17 +61,22 @@ async function shutdown(signal: string): Promise<void> {
     });
   })();
 
-  const timeout = new Promise<'timeout'>((resolve) =>
-    setTimeout(() => resolve('timeout'), SHUTDOWN_TIMEOUT_MS),
-  );
+  let shutdownTimer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<'timeout'>((resolve) => {
+    shutdownTimer = setTimeout(() => resolve('timeout'), SHUTDOWN_TIMEOUT_MS);
+  });
 
-  const outcome = await Promise.race([work.then(() => 'ok' as const), timeout]);
-  if (outcome === 'timeout') {
-    logger.error({ timeoutMs: SHUTDOWN_TIMEOUT_MS }, 'shutdown timed out, forcing exit');
-    process.exit(1);
+  try {
+    const outcome = await Promise.race([work.then(() => 'ok' as const), timeout]);
+    if (outcome === 'timeout') {
+      logger.error({ timeoutMs: SHUTDOWN_TIMEOUT_MS }, 'shutdown timed out, forcing exit');
+      process.exit(1);
+    }
+    logger.info('Closed cleanly.');
+    process.exit(0);
+  } finally {
+    if (shutdownTimer) clearTimeout(shutdownTimer);
   }
-  logger.info('Closed cleanly.');
-  process.exit(0);
 }
 
 process.on('SIGTERM', () => {

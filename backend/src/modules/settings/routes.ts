@@ -58,6 +58,6 @@ settingsRouter.post('/timezone', requirePasswordRotated, (req, res, next) => {
   }
 });
 
-settingsRouter.get('/timezones', requirePasswordRotated, (_req, res) => {
+settingsRouter.get('/timezones', (_req, res) => {
   res.json({ timezones: listTimezones() });
 });
