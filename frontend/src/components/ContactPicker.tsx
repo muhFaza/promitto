@@ -128,10 +128,7 @@ export function ContactPicker({
               role="option"
               aria-selected={false}
               className="block w-full border-b border-rule/60 px-3 py-2 text-left text-sm transition-colors last:border-b-0 hover:bg-paper-deep"
-              onPointerDown={(e) => {
-                e.preventDefault();
-                selectContact(c);
-              }}
+              onClick={() => selectContact(c)}
             >
               <div className="font-medium text-ink">{c.displayName}</div>
               <div className="font-mono text-[11px] text-ink-muted">{c.phone}</div>
