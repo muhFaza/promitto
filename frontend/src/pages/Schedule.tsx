@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from 'react';
 import { Link } from 'react-router-dom';
 import { ApiError } from '../api/client';
 import * as schedulerApi from '../api/scheduler';
@@ -20,6 +20,8 @@ const TAB_LABELS: Record<TabStatus, string> = {
   history: 'History',
   failed: 'Failed',
 };
+
+const TAB_IDS = Object.keys(TAB_LABELS) as TabStatus[];
 
 export function Schedule() {
   const user = useAuthStore((s) => s.user);
@@ -75,8 +77,26 @@ export function Schedule() {
     }
   }
 
-  const scheduledItems = useMemo(() => scheduled, [scheduled]);
-  const sentItems = useMemo(() => sent, [sent]);
+  const tabRefs = useRef<Record<TabStatus, HTMLButtonElement | null>>({
+    upcoming: null,
+    recurring: null,
+    history: null,
+    failed: null,
+  });
+
+  function onTabKeyDown(e: KeyboardEvent<HTMLDivElement>) {
+    const idx = TAB_IDS.indexOf(tab);
+    let nextIdx = idx;
+    if (e.key === 'ArrowRight') nextIdx = (idx + 1) % TAB_IDS.length;
+    else if (e.key === 'ArrowLeft') nextIdx = (idx - 1 + TAB_IDS.length) % TAB_IDS.length;
+    else if (e.key === 'Home') nextIdx = 0;
+    else if (e.key === 'End') nextIdx = TAB_IDS.length - 1;
+    else return;
+    e.preventDefault();
+    const next = TAB_IDS[nextIdx];
+    setTab(next);
+    tabRefs.current[next]?.focus();
+  }
 
   return (
     <>
@@ -99,54 +119,71 @@ export function Schedule() {
         </header>
 
         <nav className="mt-10 border-b border-rule">
-          <ul className="flex flex-wrap">
-            {(Object.keys(TAB_LABELS) as TabStatus[]).map((t) => {
+          <div
+            role="tablist"
+            aria-label="Schedule sections"
+            onKeyDown={onTabKeyDown}
+            className="flex flex-wrap"
+          >
+            {TAB_IDS.map((t) => {
               const active = tab === t;
               return (
-                <li key={t}>
-                  <button
-                    type="button"
-                    onClick={() => setTab(t)}
-                    className={
-                      active
-                        ? 'relative -mb-px border-b-2 border-ink px-4 py-3 text-[11px] font-medium uppercase tracking-caps text-ink'
-                        : 'px-4 py-3 text-[11px] font-medium uppercase tracking-caps text-ink-muted transition-colors hover:text-ink'
-                    }
-                  >
-                    {TAB_LABELS[t]}
-                  </button>
-                </li>
+                <button
+                  key={t}
+                  type="button"
+                  role="tab"
+                  id={`schedule-tab-${t}`}
+                  aria-selected={active}
+                  aria-controls={`schedule-panel-${t}`}
+                  tabIndex={active ? 0 : -1}
+                  ref={(el) => {
+                    tabRefs.current[t] = el;
+                  }}
+                  onClick={() => setTab(t)}
+                  className={
+                    active
+                      ? 'relative -mb-px border-b-2 border-ink px-4 py-3 text-[11px] font-medium uppercase tracking-caps text-ink'
+                      : 'px-4 py-3 text-[11px] font-medium uppercase tracking-caps text-ink-muted transition-colors hover:text-ink'
+                  }
+                >
+                  {TAB_LABELS[t]}
+                </button>
               );
             })}
-          </ul>
+          </div>
         </nav>
 
-        <section className="mt-0">
+        <section
+          className="mt-0"
+          role="tabpanel"
+          id={`schedule-panel-${tab}`}
+          aria-labelledby={`schedule-tab-${tab}`}
+        >
           {listLoading ? (
             <div className="flex items-center justify-center p-16 text-ink-muted">
               <Spinner size={24} />
             </div>
           ) : tab === 'upcoming' || tab === 'recurring' ? (
-            scheduledItems.length === 0 ? (
+            scheduled.length === 0 ? (
               <EmptyState
                 label={`No ${TAB_LABELS[tab].toLowerCase()} promises.`}
                 sub="Compose one on the dashboard."
               />
             ) : (
               <ScheduledTable
-                rows={scheduledItems}
+                rows={scheduled}
                 tz={tz}
                 onEdit={setEditingMessage}
                 onCancel={handleCancel}
               />
             )
-          ) : sentItems.length === 0 ? (
+          ) : sent.length === 0 ? (
             <EmptyState
               label={`No ${TAB_LABELS[tab].toLowerCase()} yet.`}
               sub=""
             />
           ) : (
-            <SentTable rows={sentItems} tz={tz} />
+            <SentTable rows={sent} tz={tz} />
           )}
         </section>
       </main>

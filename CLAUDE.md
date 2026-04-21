@@ -85,8 +85,10 @@ Aesthetic: **"quiet utility ledger"** — warm paper + ink, deliberate typograph
 
 - Passwords → Argon2id (`lib/password.ts`)
 - Sessions → opaque random token, HttpOnly cookie, **signed** with `SESSION_SECRET` via HMAC-SHA256 (`lib/cookie-signer.ts`). Rotating `SESSION_SECRET` invalidates all sessions by design.
-- `requireAuth` middleware calls `readSignedSessionId()` → `getSessionWithUser()` → `touchSession()`
+- CSRF tokens → HMAC-SHA256 of session id, keyed by `CSRF_SECRET` (`lib/csrf.ts`). Falls back to `SESSION_SECRET` when unset; set distinct in production to separate HMAC keyspace. Rotating invalidates outstanding CSRF cookies on next login.
+- `requireAuth` middleware calls `readSignedSessionId()` → `getSessionWithUser()` → `touchSession()` → `setCsrfCookie()` (sliding TTL on both session row and CSRF cookie `maxAge`)
 - Superuser gating via `requireSuperuser` (checks `req.user.role === 'superuser'`)
+- Login wraps session revocation + new-session insert in a single `sqlite.transaction().immediate()` so concurrent double-submits can't leave multiple live sessions.
 
 ## Scheduler invariants
 
@@ -151,7 +153,7 @@ The entrypoint runs `db:migrate` before starting the server. Migrations must be 
 
 ## Things that break silently if you miss them
 
-- `SESSION_SECRET` must be ≥32 chars; env schema rejects short ones at boot.
+- `SESSION_SECRET` must be ≥32 chars; env schema rejects short ones at boot. `CSRF_SECRET` has the same floor but is optional (falls back to `SESSION_SECRET`).
 - Tests/CLIs that pipe stdin can't use `@inquirer/prompts` (needs a TTY). Use `scripts/test-*` helpers for non-interactive flows.
 - Empty Zustand generic arg trips the eslint empty-type rule — use the v5 curried form: `create<State>()((set) => (...))`.
 - Drizzle 0.36.x index API: pass a plain object `(t) => ({ idx: index(...) })`, not an array.

@@ -8,11 +8,13 @@ import {
   serializeSent,
 } from '../../lib/scheduled-message.js';
 import { requireAuth } from '../../middleware/auth.js';
+import { requireCsrf } from '../../middleware/csrf.js';
+import { requirePasswordRotated } from '../../middleware/password-gate.js';
 import * as contactsService from '../contacts/service.js';
 import * as service from './service.js';
 
 export const schedulerRouter: Router = Router();
-schedulerRouter.use(requireAuth);
+schedulerRouter.use(requireAuth, requirePasswordRotated, requireCsrf);
 
 const CreateBody = z
   .object({

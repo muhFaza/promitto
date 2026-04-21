@@ -22,7 +22,7 @@ export function RequireAuth({ children, requireSuperuser = false }: Props) {
 
   if (status === 'idle' || status === 'loading') {
     return (
-      <div className="flex min-h-screen items-center justify-center text-slate-400">
+      <div className="flex min-h-screen items-center justify-center text-ink-muted">
         <Spinner size={24} />
       </div>
     );
@@ -30,6 +30,10 @@ export function RequireAuth({ children, requireSuperuser = false }: Props) {
 
   if (status === 'unauthorized' || !user) {
     return <Navigate to="/login" replace state={{ from: location.pathname }} />;
+  }
+
+  if (user.mustChangePassword && location.pathname !== '/app/settings') {
+    return <Navigate to="/app/settings" replace />;
   }
 
   if (requireSuperuser && user.role !== 'superuser') {

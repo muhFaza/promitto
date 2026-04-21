@@ -25,6 +25,8 @@ export const errors = {
     new AppError('not_implemented', 501, `${what} is not implemented yet`),
   unauthorized: (message = 'Unauthorized') => new AppError('unauthorized', 401, message),
   forbidden: (message = 'Forbidden') => new AppError('forbidden', 403, message),
+  mustChangePassword: () =>
+    new AppError('must_change_password', 403, 'Password change required'),
   notFound: (what: string) => new AppError('not_found', 404, `${what} not found`),
   conflict: (message: string) => new AppError('conflict', 409, message),
   badRequest: (message: string, details?: unknown) =>

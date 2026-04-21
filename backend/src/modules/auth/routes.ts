@@ -1,14 +1,25 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { SESSION_COOKIE_NAME, SESSION_DURATION_MS } from '../../config/constants.js';
+import {
+  CSRF_COOKIE_NAME,
+  SESSION_COOKIE_NAME,
+  SESSION_DURATION_MS,
+} from '../../config/constants.js';
 import { env } from '../../config/env.js';
-import { readSignedSessionId, signSessionId } from '../../lib/cookie-signer.js';
+import { sqlite } from '../../db/client.js';
+import { signSessionId } from '../../lib/cookie-signer.js';
+import { setCsrfCookie } from '../../lib/csrf.js';
 import { errors } from '../../lib/errors.js';
 import { verifyPassword } from '../../lib/password.js';
 import { serializeUser } from '../../lib/user.js';
 import { requireAuth } from '../../middleware/auth.js';
 import { loginEmailBucket, loginIpBucket } from './rate-limit.js';
-import { createSession, deleteSession, findUserByEmail } from './service.js';
+import {
+  createSession,
+  deleteAllSessionsForUser,
+  deleteSession,
+  findUserByEmail,
+} from './service.js';
 
 export const authRouter: Router = Router();
 
@@ -37,11 +48,16 @@ authRouter.post('/login', async (req, res, next) => {
       throw errors.unauthorized('Invalid email or password');
     }
 
-    const session = createSession({
-      userId: user.id,
-      userAgent: req.headers['user-agent'] ?? null,
-      ip: req.ip ?? null,
-    });
+    // Atomic: revoke prior sessions and mint the new one under a single write lock so
+    // concurrent logins cannot leave multiple live sessions.
+    const session = sqlite.transaction(() => {
+      deleteAllSessionsForUser(user.id);
+      return createSession({
+        userId: user.id,
+        userAgent: req.headers['user-agent'] ?? null,
+        ip: req.ip ?? null,
+      });
+    }).immediate();
 
     res.cookie(SESSION_COOKIE_NAME, signSessionId(session.id), {
       httpOnly: true,
@@ -51,17 +67,28 @@ authRouter.post('/login', async (req, res, next) => {
       maxAge: SESSION_DURATION_MS,
     });
 
+    setCsrfCookie(res, session.id);
+
     res.json(serializeUser(user));
   } catch (err) {
     next(err);
   }
 });
 
-authRouter.post('/logout', (req, res) => {
-  const cookies = req.cookies as Record<string, string | undefined> | undefined;
-  const sid = readSignedSessionId(cookies?.[SESSION_COOKIE_NAME]);
-  if (sid) deleteSession(sid);
-  res.clearCookie(SESSION_COOKIE_NAME, { path: '/' });
+authRouter.post('/logout', requireAuth, (req, res) => {
+  if (req.session) deleteSession(req.session.id);
+  res.clearCookie(SESSION_COOKIE_NAME, {
+    httpOnly: true,
+    sameSite: 'lax',
+    secure: env.NODE_ENV === 'production',
+    path: '/',
+  });
+  res.clearCookie(CSRF_COOKIE_NAME, {
+    httpOnly: false,
+    sameSite: 'lax',
+    secure: env.NODE_ENV === 'production',
+    path: '/',
+  });
   res.status(204).end();
 });
 

@@ -51,8 +51,12 @@ export function getSessionWithUser(
 }
 
 export function touchSession(sessionId: string): void {
+  const now = new Date();
   db.update(sessions)
-    .set({ lastSeenAt: new Date() })
+    .set({
+      lastSeenAt: now,
+      expiresAt: new Date(now.getTime() + SESSION_DURATION_MS),
+    })
     .where(eq(sessions.id, sessionId))
     .run();
 }
