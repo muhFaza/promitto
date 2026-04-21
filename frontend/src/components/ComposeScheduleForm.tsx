@@ -173,7 +173,7 @@ export function ComposeScheduleForm({ onCreated }: Props) {
       {pendingCount >= PENDING_WARNING_THRESHOLD && (
         <div className="mb-5 border border-amber-soft/50 bg-amber-soft-bg/60 px-4 py-3 text-xs text-ink-soft">
           <span className="eyebrow mr-2 text-amber-soft">Heads up</span>
-          You have <span className="font-mono font-medium">{pendingCount}</span>{' '}
+          You have <span className="font-medium">{pendingCount}</span>{' '}
           pending one-time promises. Consider reviewing before adding more.
         </div>
       )}

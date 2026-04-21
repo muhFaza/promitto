@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
+import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from 'react';
 import { Link } from 'react-router-dom';
 import { ApiError } from '../api/client';
 import * as schedulerApi from '../api/scheduler';
@@ -19,6 +19,8 @@ const TAB_LABELS: Record<TabStatus, string> = {
   history: 'History',
   failed: 'Failed',
 };
+
+const TAB_IDS = Object.keys(TAB_LABELS) as TabStatus[];
 
 export function Schedule() {
   const user = useAuthStore((s) => s.user);
@@ -73,10 +75,6 @@ export function Schedule() {
     }
   }
 
-  const scheduledItems = useMemo(() => scheduled, [scheduled]);
-  const sentItems = useMemo(() => sent, [sent]);
-
-  const tabIds = useMemo(() => Object.keys(TAB_LABELS) as TabStatus[], []);
   const tabRefs = useRef<Record<TabStatus, HTMLButtonElement | null>>({
     upcoming: null,
     recurring: null,
@@ -85,15 +83,15 @@ export function Schedule() {
   });
 
   function onTabKeyDown(e: KeyboardEvent<HTMLDivElement>) {
-    const idx = tabIds.indexOf(tab);
+    const idx = TAB_IDS.indexOf(tab);
     let nextIdx = idx;
-    if (e.key === 'ArrowRight') nextIdx = (idx + 1) % tabIds.length;
-    else if (e.key === 'ArrowLeft') nextIdx = (idx - 1 + tabIds.length) % tabIds.length;
+    if (e.key === 'ArrowRight') nextIdx = (idx + 1) % TAB_IDS.length;
+    else if (e.key === 'ArrowLeft') nextIdx = (idx - 1 + TAB_IDS.length) % TAB_IDS.length;
     else if (e.key === 'Home') nextIdx = 0;
-    else if (e.key === 'End') nextIdx = tabIds.length - 1;
+    else if (e.key === 'End') nextIdx = TAB_IDS.length - 1;
     else return;
     e.preventDefault();
-    const next = tabIds[nextIdx];
+    const next = TAB_IDS[nextIdx];
     setTab(next);
     tabRefs.current[next]?.focus();
   }
@@ -125,7 +123,7 @@ export function Schedule() {
             onKeyDown={onTabKeyDown}
             className="flex flex-wrap"
           >
-            {tabIds.map((t) => {
+            {TAB_IDS.map((t) => {
               const active = tab === t;
               return (
                 <button
@@ -164,25 +162,25 @@ export function Schedule() {
               <Spinner size={24} />
             </div>
           ) : tab === 'upcoming' || tab === 'recurring' ? (
-            scheduledItems.length === 0 ? (
+            scheduled.length === 0 ? (
               <EmptyState
                 label={`No ${TAB_LABELS[tab].toLowerCase()} promises.`}
                 sub="Compose one on the dashboard."
               />
             ) : (
               <ScheduledTable
-                rows={scheduledItems}
+                rows={scheduled}
                 tz={tz}
                 onCancel={handleCancel}
               />
             )
-          ) : sentItems.length === 0 ? (
+          ) : sent.length === 0 ? (
             <EmptyState
               label={`No ${TAB_LABELS[tab].toLowerCase()} yet.`}
               sub=""
             />
           ) : (
-            <SentTable rows={sentItems} tz={tz} />
+            <SentTable rows={sent} tz={tz} />
           )}
         </section>
       </main>
