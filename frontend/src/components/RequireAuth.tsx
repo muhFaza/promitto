@@ -22,7 +22,7 @@ export function RequireAuth({ children, requireSuperuser = false }: Props) {
 
   if (status === 'idle' || status === 'loading') {
     return (
-      <div className="flex min-h-screen items-center justify-center text-slate-400">
+      <div className="flex min-h-screen items-center justify-center text-ink-muted">
         <Spinner size={24} />
       </div>
     );

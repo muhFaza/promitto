@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
 import { Link } from 'react-router-dom';
 import { ApiError } from '../api/client';
 import * as schedulerApi from '../api/scheduler';
@@ -76,6 +76,28 @@ export function Schedule() {
   const scheduledItems = useMemo(() => scheduled, [scheduled]);
   const sentItems = useMemo(() => sent, [sent]);
 
+  const tabIds = useMemo(() => Object.keys(TAB_LABELS) as TabStatus[], []);
+  const tabRefs = useRef<Record<TabStatus, HTMLButtonElement | null>>({
+    upcoming: null,
+    recurring: null,
+    history: null,
+    failed: null,
+  });
+
+  function onTabKeyDown(e: KeyboardEvent<HTMLDivElement>) {
+    const idx = tabIds.indexOf(tab);
+    let nextIdx = idx;
+    if (e.key === 'ArrowRight') nextIdx = (idx + 1) % tabIds.length;
+    else if (e.key === 'ArrowLeft') nextIdx = (idx - 1 + tabIds.length) % tabIds.length;
+    else if (e.key === 'Home') nextIdx = 0;
+    else if (e.key === 'End') nextIdx = tabIds.length - 1;
+    else return;
+    e.preventDefault();
+    const next = tabIds[nextIdx];
+    setTab(next);
+    tabRefs.current[next]?.focus();
+  }
+
   return (
     <>
       <AppHeader />
@@ -97,29 +119,46 @@ export function Schedule() {
         </header>
 
         <nav className="mt-10 border-b border-rule">
-          <ul className="flex flex-wrap">
-            {(Object.keys(TAB_LABELS) as TabStatus[]).map((t) => {
+          <div
+            role="tablist"
+            aria-label="Schedule sections"
+            onKeyDown={onTabKeyDown}
+            className="flex flex-wrap"
+          >
+            {tabIds.map((t) => {
               const active = tab === t;
               return (
-                <li key={t}>
-                  <button
-                    type="button"
-                    onClick={() => setTab(t)}
-                    className={
-                      active
-                        ? 'relative -mb-px border-b-2 border-ink px-4 py-3 text-[11px] font-medium uppercase tracking-caps text-ink'
-                        : 'px-4 py-3 text-[11px] font-medium uppercase tracking-caps text-ink-muted transition-colors hover:text-ink'
-                    }
-                  >
-                    {TAB_LABELS[t]}
-                  </button>
-                </li>
+                <button
+                  key={t}
+                  type="button"
+                  role="tab"
+                  id={`schedule-tab-${t}`}
+                  aria-selected={active}
+                  aria-controls={`schedule-panel-${t}`}
+                  tabIndex={active ? 0 : -1}
+                  ref={(el) => {
+                    tabRefs.current[t] = el;
+                  }}
+                  onClick={() => setTab(t)}
+                  className={
+                    active
+                      ? 'relative -mb-px border-b-2 border-ink px-4 py-3 text-[11px] font-medium uppercase tracking-caps text-ink'
+                      : 'px-4 py-3 text-[11px] font-medium uppercase tracking-caps text-ink-muted transition-colors hover:text-ink'
+                  }
+                >
+                  {TAB_LABELS[t]}
+                </button>
               );
             })}
-          </ul>
+          </div>
         </nav>
 
-        <section className="mt-0">
+        <section
+          className="mt-0"
+          role="tabpanel"
+          id={`schedule-panel-${tab}`}
+          aria-labelledby={`schedule-tab-${tab}`}
+        >
           {listLoading ? (
             <div className="flex items-center justify-center p-16 text-ink-muted">
               <Spinner size={24} />

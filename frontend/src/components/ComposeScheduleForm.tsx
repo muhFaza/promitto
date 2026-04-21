@@ -217,8 +217,8 @@ export function ComposeScheduleForm({ onCreated }: Props) {
               onClick={() => setType('recurring')}
               className={
                 type === 'recurring'
-                  ? 'rounded-sm bg-ink px-4 py-1.5 font-mono text-[11px] uppercase tracking-caps text-paper-raised'
-                  : 'px-4 py-1.5 font-mono text-[11px] uppercase tracking-caps text-ink-muted transition-colors hover:text-ink'
+                  ? 'rounded-sm bg-ink px-4 py-1.5 text-[11px] font-medium uppercase tracking-caps text-paper-raised'
+                  : 'px-4 py-1.5 text-[11px] font-medium uppercase tracking-caps text-ink-muted transition-colors hover:text-ink'
               }
             >
               Recurring
