@@ -4,6 +4,7 @@ export type UserPublic = {
   role: 'user' | 'superuser';
   timezone: string;
   disabledAt: number | null;
+  mustChangePassword: boolean;
   createdAt: number;
   updatedAt: number;
 };

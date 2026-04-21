@@ -32,6 +32,10 @@ export function RequireAuth({ children, requireSuperuser = false }: Props) {
     return <Navigate to="/login" replace state={{ from: location.pathname }} />;
   }
 
+  if (user.mustChangePassword && location.pathname !== '/app/settings') {
+    return <Navigate to="/app/settings" replace />;
+  }
+
   if (requireSuperuser && user.role !== 'superuser') {
     return <Navigate to="/app" replace />;
   }

@@ -1,14 +1,25 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { SESSION_COOKIE_NAME, SESSION_DURATION_MS } from '../../config/constants.js';
+import {
+  CSRF_COOKIE_NAME,
+  SESSION_COOKIE_NAME,
+  SESSION_DURATION_MS,
+} from '../../config/constants.js';
 import { env } from '../../config/env.js';
-import { readSignedSessionId, signSessionId } from '../../lib/cookie-signer.js';
+import { signSessionId } from '../../lib/cookie-signer.js';
+import { computeCsrfToken } from '../../lib/csrf.js';
 import { errors } from '../../lib/errors.js';
 import { verifyPassword } from '../../lib/password.js';
 import { serializeUser } from '../../lib/user.js';
 import { requireAuth } from '../../middleware/auth.js';
+import { requireCsrf } from '../../middleware/csrf.js';
 import { loginEmailBucket, loginIpBucket } from './rate-limit.js';
-import { createSession, deleteSession, findUserByEmail } from './service.js';
+import {
+  createSession,
+  deleteAllSessionsForUser,
+  deleteSession,
+  findUserByEmail,
+} from './service.js';
 
 export const authRouter: Router = Router();
 
@@ -37,6 +48,8 @@ authRouter.post('/login', async (req, res, next) => {
       throw errors.unauthorized('Invalid email or password');
     }
 
+    deleteAllSessionsForUser(user.id);
+
     const session = createSession({
       userId: user.id,
       userAgent: req.headers['user-agent'] ?? null,
@@ -51,17 +64,34 @@ authRouter.post('/login', async (req, res, next) => {
       maxAge: SESSION_DURATION_MS,
     });
 
+    res.cookie(CSRF_COOKIE_NAME, computeCsrfToken(session.id), {
+      httpOnly: false,
+      sameSite: 'lax',
+      secure: env.NODE_ENV === 'production',
+      path: '/',
+      maxAge: SESSION_DURATION_MS,
+    });
+
     res.json(serializeUser(user));
   } catch (err) {
     next(err);
   }
 });
 
-authRouter.post('/logout', (req, res) => {
-  const cookies = req.cookies as Record<string, string | undefined> | undefined;
-  const sid = readSignedSessionId(cookies?.[SESSION_COOKIE_NAME]);
-  if (sid) deleteSession(sid);
-  res.clearCookie(SESSION_COOKIE_NAME, { path: '/' });
+authRouter.post('/logout', requireAuth, requireCsrf, (req, res) => {
+  if (req.session) deleteSession(req.session.id);
+  res.clearCookie(SESSION_COOKIE_NAME, {
+    httpOnly: true,
+    sameSite: 'lax',
+    secure: env.NODE_ENV === 'production',
+    path: '/',
+  });
+  res.clearCookie(CSRF_COOKIE_NAME, {
+    httpOnly: false,
+    sameSite: 'lax',
+    secure: env.NODE_ENV === 'production',
+    path: '/',
+  });
   res.status(204).end();
 });
 

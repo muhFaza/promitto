@@ -39,6 +39,7 @@ type CreateUserInput = {
   role: 'user' | 'superuser';
   timezone?: string;
   password: string;
+  mustChangePassword?: boolean;
 };
 
 export async function createUser(input: CreateUserInput): Promise<User> {
@@ -51,6 +52,7 @@ export async function createUser(input: CreateUserInput): Promise<User> {
       role: input.role,
       timezone: input.timezone ?? env.DEFAULT_TIMEZONE,
       passwordHash,
+      mustChangePassword: input.mustChangePassword ?? false,
     })
     .returning()
     .all();
@@ -65,9 +67,24 @@ export function setDisabledAt(id: string, disabledAt: Date | null): void {
     .run();
 }
 
-export async function setPassword(id: string, newPlain: string): Promise<void> {
+type SetPasswordOptions = {
+  mustChangePassword?: boolean;
+};
+
+export async function setPassword(
+  id: string,
+  newPlain: string,
+  options: SetPasswordOptions = {},
+): Promise<void> {
   const passwordHash = await hashPassword(newPlain);
-  db.update(users).set({ passwordHash, updatedAt: new Date() }).where(eq(users.id, id)).run();
+  db.update(users)
+    .set({
+      passwordHash,
+      mustChangePassword: options.mustChangePassword ?? false,
+      updatedAt: new Date(),
+    })
+    .where(eq(users.id, id))
+    .run();
 }
 
 export function setTimezone(id: string, timezone: string): void {
