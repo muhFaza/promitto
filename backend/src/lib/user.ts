@@ -6,6 +6,7 @@ export type UserPublic = {
   role: 'user' | 'superuser';
   timezone: string;
   disabledAt: number | null;
+  mustChangePassword: boolean;
   createdAt: number;
   updatedAt: number;
 };
@@ -17,6 +18,7 @@ export function serializeUser(u: User): UserPublic {
     role: u.role,
     timezone: u.timezone,
     disabledAt: u.disabledAt ? u.disabledAt.getTime() : null,
+    mustChangePassword: u.mustChangePassword,
     createdAt: u.createdAt.getTime(),
     updatedAt: u.updatedAt.getTime(),
   };

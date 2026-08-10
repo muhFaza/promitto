@@ -173,7 +173,7 @@ export function ComposeScheduleForm({ onCreated }: Props) {
       {pendingCount >= PENDING_WARNING_THRESHOLD && (
         <div className="mb-5 border border-amber-soft/50 bg-amber-soft-bg/60 px-4 py-3 text-xs text-ink-soft">
           <span className="eyebrow mr-2 text-amber-soft">Heads up</span>
-          You have <span className="font-mono font-medium">{pendingCount}</span>{' '}
+          You have <span className="font-medium">{pendingCount}</span>{' '}
           pending one-time promises. Consider reviewing before adding more.
         </div>
       )}
@@ -217,8 +217,8 @@ export function ComposeScheduleForm({ onCreated }: Props) {
               onClick={() => setType('recurring')}
               className={
                 type === 'recurring'
-                  ? 'rounded-sm bg-ink px-4 py-1.5 font-mono text-[11px] uppercase tracking-caps text-paper-raised'
-                  : 'px-4 py-1.5 font-mono text-[11px] uppercase tracking-caps text-ink-muted transition-colors hover:text-ink'
+                  ? 'rounded-sm bg-ink px-4 py-1.5 text-[11px] font-medium uppercase tracking-caps text-paper-raised'
+                  : 'px-4 py-1.5 text-[11px] font-medium uppercase tracking-caps text-ink-muted transition-colors hover:text-ink'
               }
             >
               Recurring

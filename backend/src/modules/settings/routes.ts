@@ -5,12 +5,14 @@ import { verifyPassword } from '../../lib/password.js';
 import { isValidIanaTimezone, listTimezones } from '../../lib/timezone.js';
 import { serializeUser } from '../../lib/user.js';
 import { requireAuth } from '../../middleware/auth.js';
+import { requireCsrf } from '../../middleware/csrf.js';
+import { requirePasswordRotated } from '../../middleware/password-gate.js';
 import { deleteAllSessionsForUser } from '../auth/service.js';
 import { findUserById, setPassword, setTimezone } from '../users/service.js';
 
 export const settingsRouter: Router = Router();
 
-settingsRouter.use(requireAuth);
+settingsRouter.use(requireAuth, requireCsrf);
 
 const ChangePasswordBody = z.object({
   currentPassword: z.string().min(1).max(1024),
@@ -40,7 +42,7 @@ const ChangeTimezoneBody = z.object({
   timezone: z.string().min(1).max(128),
 });
 
-settingsRouter.post('/timezone', (req, res, next) => {
+settingsRouter.post('/timezone', requirePasswordRotated, (req, res, next) => {
   try {
     const body = ChangeTimezoneBody.parse(req.body);
     if (!isValidIanaTimezone(body.timezone)) {

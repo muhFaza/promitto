@@ -42,16 +42,16 @@ Both the poller and the `SessionManager` are **module-level singletons holding i
 
 `server.ts` → `requestLogger` → `express.json({limit:'1mb'})` → `cookieParser` → `/api/health` → six routers → `errorMiddleware`. No CORS middleware: dev goes through Vite's `/api` proxy (`VITE_PROXY_TARGET`), prod is same-origin because the same Express process serves `frontend/dist` with an SPA fallback for any non-`/api` GET.
 
-Routers and their gating:
+Routers and their gating (`A` = `requireAuth`, `P` = `requirePasswordRotated`, `C` = `requireCsrf`, applied via `router.use(...)`):
 
 | Mount | Gate | Notes |
 |---|---|---|
-| `/api/auth` | none (`/me` uses `requireAuth`) | `login`, `logout`, `me` |
-| `/api/users` | `requireAuth` + `requireSuperuser` | list/create/disable/enable/reset-password/delete |
-| `/api/wa` | `requireAuth` | `connect`, `disconnect`, `logout`, `status`, `events` (SSE) |
-| `/api/contacts` | `requireAuth` | list (search, limit capped 200), create, rename, delete |
-| `/api/scheduler` | `requireAuth` | create, list (`?status=upcoming\|recurring\|history\|failed`), `stats`, `preview`, patch, cancel |
-| `/api/settings` | `requireAuth` | password, timezone, timezone list |
+| `/api/auth` | none (`/me` uses `A`) | `login`, `logout`, `me` — both POSTs are deliberately CSRF-exempt |
+| `/api/users` | `A` + `P` + `C` + `requireSuperuser` | list/create/disable/enable/reset-password/delete |
+| `/api/wa` | `A` + `P` + `C` | `connect`, `disconnect`, `logout`, `status`, `events` (SSE) |
+| `/api/contacts` | `A` + `P` + `C` | list (search, limit capped 200), create, rename, delete |
+| `/api/scheduler` | `A` + `P` + `C` | create, list (`?status=upcoming\|recurring\|history\|failed`), `stats`, `preview`, patch, cancel |
+| `/api/settings` | `A` + `C`, `P` per-route | password, timezone, timezone list (`GET /timezones` un-gated by `P` on purpose) |
 
 Every module follows `routes.ts` (zod parsing + HTTP) → `service.ts` (Drizzle, synchronous better-sqlite3). Services take `userId` as the first argument and scope every query by it — that per-query `userId` filter *is* the tenancy boundary; there is no row-level security underneath it.
 
@@ -106,7 +106,12 @@ Read `modules/scheduler/{poller,service}.ts` together before touching either.
 
 - Passwords → Argon2id (`lib/password.ts`).
 - Sessions → opaque random token in an HttpOnly cookie named `promitto_sid`, **HMAC-SHA256-signed** with `SESSION_SECRET` (`lib/cookie-signer.ts`), 30-day duration. Rotating `SESSION_SECRET` invalidates every session by design.
-- `requireAuth`: `readSignedSessionId()` → `getSessionWithUser()` → reject if `user.disabledAt` → `touchSession()` → populate `req.user` / `req.session`.
+- `requireAuth`: `readSignedSessionId()` → `getSessionWithUser()` → reject if `user.disabledAt` → `touchSession()` → `setCsrfCookie()` → populate `req.user` / `req.session`. `touchSession()` slides `expiresAt` to `now + 30d`, and the CSRF cookie's `maxAge` is re-emitted on every safe-method request so the two TTLs never drift apart.
+- **CSRF**: session-bound double-submit. `lib/csrf.ts` HMACs the session id with `CSRF_SECRET` into a non-HttpOnly `promitto_csrf` cookie (the frontend must read it); `requireCsrf` compares it against the `X-CSRF-Token` header with `timingSafeEqual` on every unsafe method. **Applied at router level** (`router.use(requireAuth, requirePasswordRotated, requireCsrf)`), so routes added later inherit it — keep it that way rather than gating per-route. `CSRF_SECRET` falls back to `SESSION_SECRET` when unset; set it distinct in prod to separate the HMAC keyspace.
+- Two deliberate CSRF exemptions: `POST /api/auth/login` (no session exists yet) and `POST /api/auth/logout` (a missing cookie must not strand a live server-side session — Safari ITP, privacy mode).
+- **Multi-device is supported on purpose.** Login does *not* revoke other live sessions — it only reaps that user's expired rows, inside one `sqlite.transaction().immediate()` with the insert. Admin actions (disable / delete / reset-password) still revoke everything; changing your own password revokes every session *except* the current one.
+- `touchSession()` slides `expiresAt` but clamps it to `createdAt + ABSOLUTE_SESSION_MAX_MS` (90d). Without that ceiling a sliding window never expires, and since login no longer revokes other sessions, this cap **is** the bound on a leaked cookie.
+- **Temp-password gate**: `users.must_change_password` is set on admin-issued temp passwords and cleared on password change. `requirePasswordRotated` returns 403 `MUST_CHANGE_PASSWORD` on gated routes; `RequireAuth` redirects to `/app/settings`. `GET /api/settings/timezones` is deliberately **un**gated so the dropdown still populates for a gated user.
 - Login is rate-limited by two in-memory token buckets (`modules/auth/rate-limit.ts`): per-IP 20 burst / 1 per 2s, per-email 5 burst / 1 per 30s. In-memory means **a restart clears them** and `TRUST_PROXY` must be on in prod or every request shares Traefik's IP.
 
 ## Frontend design system
@@ -143,7 +148,7 @@ Deployed at `~/promitto` on the personal VPS. **Read `../CLAUDE.md` (and `~/CLAU
 
 ## Breaks silently if you miss it
 
-- `SESSION_SECRET` must be ≥32 chars — the zod env schema `process.exit(1)`s at boot otherwise, and there is no other validation layer.
+- `SESSION_SECRET` must be ≥32 chars — the zod env schema `process.exit(1)`s at boot otherwise, and there is no other validation layer. `CSRF_SECRET` has the same floor but is **optional** and falls back to `SESSION_SECRET`, so an existing deployment without it still boots.
 - The service worker must **never** cache `/api/*` (`frontend/public/sw.js`) — stale scheduler state is worse than none. Shell-only: cache-first for `/assets/`, network-first for navigations.
 - Empty Zustand generic arg trips the eslint empty-type rule — use the v5 curried form: `create<State>()((set) => …)`.
 - Drizzle 0.36.x index API: return a plain object from the table callback, `(t) => ({ idx: index(...) })`, not an array.

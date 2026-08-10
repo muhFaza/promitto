@@ -2,9 +2,9 @@ import { cn } from '../../lib/cn';
 import { useUiStore, type ToastLevel } from '../../stores/ui';
 
 const TONES: Record<ToastLevel, string> = {
-  info: 'border-slate-200 bg-white text-slate-800',
-  success: 'border-emerald-200 bg-emerald-50 text-emerald-800',
-  error: 'border-red-200 bg-red-50 text-red-800',
+  info: 'border-rule bg-paper-raised text-ink',
+  success: 'border-accent/40 bg-paper-raised text-accent',
+  error: 'border-accent-warm/40 bg-paper-raised text-accent-warm',
 };
 
 export function ToastContainer() {
@@ -12,14 +12,19 @@ export function ToastContainer() {
   const remove = useUiStore((s) => s.removeToast);
 
   return (
-    <div className="pointer-events-none fixed bottom-4 right-4 z-50 flex max-w-sm flex-col gap-2">
+    <div
+      role="status"
+      aria-live="polite"
+      aria-atomic="true"
+      className="pointer-events-none fixed bottom-4 right-4 z-50 flex max-w-sm flex-col gap-2"
+    >
       {toasts.map((t) => (
         <button
           type="button"
           key={t.id}
           onClick={() => remove(t.id)}
           className={cn(
-            'pointer-events-auto rounded-md border px-4 py-3 text-left text-sm shadow-md',
+            'pointer-events-auto border px-4 py-3 text-left text-sm',
             TONES[t.level],
           )}
         >

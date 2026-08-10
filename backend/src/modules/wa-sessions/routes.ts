@@ -1,11 +1,13 @@
 import { Router } from 'express';
 import { errors } from '../../lib/errors.js';
 import { requireAuth } from '../../middleware/auth.js';
+import { requireCsrf } from '../../middleware/csrf.js';
+import { requirePasswordRotated } from '../../middleware/password-gate.js';
 import { sessionManager } from './manager.js';
 import type { SessionEvent } from './types.js';
 
 export const waRouter: Router = Router();
-waRouter.use(requireAuth);
+waRouter.use(requireAuth, requirePasswordRotated, requireCsrf);
 
 waRouter.post('/connect', async (req, res, next) => {
   try {
