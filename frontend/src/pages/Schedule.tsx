@@ -134,7 +134,9 @@ export function Schedule() {
                   role="tab"
                   id={`schedule-tab-${t}`}
                   aria-selected={active}
-                  aria-controls={`schedule-panel-${t}`}
+                  // Only the active panel is rendered, so pointing an inactive
+                  // tab at a non-existent id would be a dangling reference.
+                  {...(active ? { 'aria-controls': `schedule-panel-${t}` } : {})}
                   tabIndex={active ? 0 : -1}
                   ref={(el) => {
                     tabRefs.current[t] = el;
@@ -154,10 +156,13 @@ export function Schedule() {
         </nav>
 
         <section
-          className="mt-0"
+          className="mt-0 focus-visible:outline-none"
           role="tabpanel"
           id={`schedule-panel-${tab}`}
           aria-labelledby={`schedule-tab-${tab}`}
+          // Keeps the panel reachable from the tablist even when its content is
+          // an empty state with nothing else focusable inside it.
+          tabIndex={0}
         >
           {listLoading ? (
             <div className="flex items-center justify-center p-16 text-ink-muted">

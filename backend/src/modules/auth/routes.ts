@@ -16,7 +16,7 @@ import { requireAuth } from '../../middleware/auth.js';
 import { loginEmailBucket, loginIpBucket } from './rate-limit.js';
 import {
   createSession,
-  deleteAllSessionsForUser,
+  deleteExpiredSessionsForUser,
   deleteSession,
   findUserByEmail,
 } from './service.js';
@@ -30,6 +30,16 @@ const LoginBody = z.object({
 
 authRouter.post('/login', async (req, res, next) => {
   try {
+    // Login is necessarily CSRF-exempt (no session exists yet). Today a
+    // cross-site login-CSRF is blocked only incidentally: express.json() ignores
+    // the text/plain body an HTML form can send, and a correct content-type via
+    // fetch needs a preflight nothing answers. Assert it explicitly so adding
+    // express.urlencoded() later can't silently open login-CSRF, which would
+    // sign a victim into the attacker's account and send their scheduled
+    // messages from the attacker's paired WhatsApp number.
+    if (!req.is('application/json')) {
+      throw errors.badRequest('Content-Type must be application/json');
+    }
     const body = LoginBody.parse(req.body);
     const ip = req.ip ?? 'unknown';
     const emailKey = body.email.trim().toLowerCase();
@@ -48,10 +58,14 @@ authRouter.post('/login', async (req, res, next) => {
       throw errors.unauthorized('Invalid email or password');
     }
 
-    // Atomic: revoke prior sessions and mint the new one under a single write lock so
-    // concurrent logins cannot leave multiple live sessions.
+    // Multi-device is supported: other live sessions survive a new login. We
+    // only reap this user's expired rows, under the same write lock as the
+    // insert so concurrent logins can't interleave. Note this gives up
+    // "the next login kills a stolen cookie" — the absolute cap in
+    // touchSession() (createdAt + ABSOLUTE_SESSION_MAX_MS) is what bounds a
+    // leaked session now.
     const session = sqlite.transaction(() => {
-      deleteAllSessionsForUser(user.id);
+      deleteExpiredSessionsForUser(user.id);
       return createSession({
         userId: user.id,
         userAgent: req.headers['user-agent'] ?? null,
@@ -75,6 +89,13 @@ authRouter.post('/login', async (req, res, next) => {
   }
 });
 
+// Deliberately CSRF-exempt: a missing promitto_csrf cookie (Safari ITP, privacy
+// mode) must not strand a live server-side session. requireAuth + the session
+// cookie's SameSite=Lax is what makes that safe — a cross-site POST carries no
+// cookie and 401s before anything is deleted. Caveat: SameSite is site-scoped,
+// and `my.id` is a PSL public suffix, so any future host under muhfaza.my.id
+// would be same-site and could force a logout (DoS only — CSRF forgery still
+// fails, since the token is HMAC-bound to the victim's session id).
 authRouter.post('/logout', requireAuth, (req, res) => {
   if (req.session) deleteSession(req.session.id);
   res.clearCookie(SESSION_COOKIE_NAME, {

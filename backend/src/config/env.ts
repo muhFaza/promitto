@@ -5,10 +5,14 @@ const EnvSchema = z.object({
   PORT: z.coerce.number().int().positive().default(3000),
   APP_URL: z.string().url().default('http://localhost:3000'),
   SESSION_SECRET: z.string().min(32, 'SESSION_SECRET must be at least 32 characters'),
-  CSRF_SECRET: z
-    .string()
-    .min(32, 'CSRF_SECRET must be at least 32 characters')
-    .optional(),
+  // Empty string is normalized to "unset" before validation: docker-compose
+  // renders an unset `${CSRF_SECRET:-}` as an empty env var rather than
+  // omitting it, and a bare .optional() would fail that on min(32) and
+  // process.exit(1) the container on boot.
+  CSRF_SECRET: z.preprocess(
+    (v) => (v === '' ? undefined : v),
+    z.string().min(32, 'CSRF_SECRET must be at least 32 characters').optional(),
+  ),
   DATABASE_PATH: z.string().default('./data/promitto.db'),
   SESSIONS_DIR: z.string().default('./data/sessions'),
   LOG_LEVEL: z

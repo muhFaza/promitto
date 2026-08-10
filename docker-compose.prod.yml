@@ -5,6 +5,10 @@ services:
     image: promitto:deploy
     container_name: promitto
     restart: unless-stopped
+    # Must exceed SHUTDOWN_TIMEOUT_MS in backend/src/main.ts, or Docker's 10s
+    # default SIGKILLs mid-shutdown and the graceful path can never run —
+    # cutting a send mid-flight and stranding the row's picked_at lease.
+    stop_grace_period: 40s
     # Node + Baileys sockets; the box has ~960MB total and every other service
     # is capped too. Raise this before adding paired numbers, not after an OOM.
     mem_limit: 384m
@@ -13,6 +17,9 @@ services:
       PORT: 3000
       APP_URL: ${APP_URL:-https://wa.muhfaza.my.id}
       SESSION_SECRET: ${SESSION_SECRET}
+      # Optional. Unset renders as an empty string here and is normalized back
+      # to "unset" in config/env.ts, which falls back to SESSION_SECRET.
+      CSRF_SECRET: ${CSRF_SECRET:-}
       DATABASE_PATH: /app/backend/data/promitto.db
       SESSIONS_DIR: /app/backend/data/sessions
       LOG_LEVEL: ${LOG_LEVEL:-info}

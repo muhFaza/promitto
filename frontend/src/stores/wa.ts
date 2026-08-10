@@ -81,8 +81,14 @@ export const useWaStore = create<WaState>()((set, get) => ({
     activeSseUnsub = unsub;
     return () => {
       unsub();
-      if (activeSseUnsub === unsub) activeSseUnsub = null;
-      set({ subscribed: false });
+      // Only clear the flag if we're still the live subscription. A stale
+      // unmount cleanup firing after a newer subscribe() would otherwise leave
+      // subscribed=false alongside a live EventSource, and the next
+      // subscribe() would open a second one.
+      if (activeSseUnsub === unsub) {
+        activeSseUnsub = null;
+        set({ subscribed: false });
+      }
     };
   },
 

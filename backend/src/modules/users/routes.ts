@@ -95,6 +95,15 @@ usersRouter.post('/:id/reset-password', async (req, res, next) => {
     const id = req.params.id;
     const user = findUserById(id);
     if (!user) throw errors.notFound('user');
+    if (!req.user) throw errors.unauthorized();
+    // Matches the disable/delete self-guards. Without it a lone superuser can
+    // reset themselves, which destroys their own session — and the temp
+    // password only exists in this response body, which the resulting
+    // redirect-to-login can unmount before it is read. Recovery would be
+    // SSH-only via cli:reset-superuser-password.
+    if (user.id === req.user.id) {
+      throw errors.badRequest('Change your own password from Settings instead');
+    }
 
     const tempPassword = generateTempPassword();
     await setPassword(id, tempPassword, { mustChangePassword: true });

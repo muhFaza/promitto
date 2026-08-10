@@ -60,6 +60,7 @@ type Handle = {
 
 const CONNECT_SETTLE_TIMEOUT_MS = 15_000;
 const CONTACT_SYNC_DEBOUNCE_MS = 2_000;
+const CONTACT_SYNC_MAX_BUFFER = 200;
 
 let cachedWaVersion: [number, number, number] | null = null;
 let versionFetchPromise: Promise<[number, number, number] | null> | null = null;
@@ -144,25 +145,40 @@ class SessionManager {
       }
     }
 
-    // Already in a productive state — no new socket needed. Gating on status
-    // (not just connectPromise) closes the race where a caller arrives after
-    // runConnect's finally-block nulled connectPromise but the handle is
-    // already driving a live socket, which would otherwise spawn a duplicate.
-    if (h.status === 'connected' || h.status === 'qr_pending') return;
+    // Already in a productive state *and* actually driving a socket — no new
+    // one needed. Gating on status as well as connectPromise closes the race
+    // where a caller arrives after runConnect's finally-block nulled
+    // connectPromise but the handle is already live, which would spawn a
+    // duplicate. The `h.sock` conjunct is load-bearing: on boot the handles map
+    // is empty and ensureHandle() seeds status straight from the DB row, so a
+    // restored 'connected' row would otherwise short-circuit restoreAll() into
+    // a no-op and leave every paired session socketless.
+    if (h.sock && (h.status === 'connected' || h.status === 'qr_pending')) return;
 
     if (h.connectPromise) return h.connectPromise;
 
     // Status is 'connecting' without a live connectPromise — runConnect's
     // 15s settle guard resolved but the socket never transitioned. Wait for
     // the next settle event rather than racing a second Baileys socket.
+    // Bounded by the same settle timeout: a reconnect ladder re-emits
+    // 'connecting' on every attempt and can run to a 60s backoff, so an
+    // unbounded wait would park the HTTP request for minutes and leak one
+    // listener per impatient retry onto the same emitter the SSE streams use.
     if (h.status === 'connecting') {
+      h.reconnectAttempts = 0;
       return new Promise<void>((resolve) => {
-        const handler = (ev: SessionEvent): void => {
-          if (ev.type === 'status' && ev.value !== 'connecting') {
-            h.events.off('event', handler);
-            resolve();
-          }
+        let settled = false;
+        const done = (): void => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          h.events.off('event', handler);
+          resolve();
         };
+        const handler = (ev: SessionEvent): void => {
+          if (ev.type === 'status' && ev.value !== 'connecting') done();
+        };
+        const timer: NodeJS.Timeout = setTimeout(done, CONNECT_SETTLE_TIMEOUT_MS);
         h.events.on('event', handler);
       });
     }
@@ -285,6 +301,16 @@ class SessionManager {
     }
 
     if (h.pendingContacts.size === 0) return;
+
+    // Hard cap on the buffer: the quiet window resets on every batch, and
+    // Baileys streams the initial post-pair sync in batches faster than 2s
+    // apart, so a pure debounce can be starved until the stream pauses. An
+    // ungraceful exit in that window loses the whole address book, and a plain
+    // reconnect won't re-emit it — only another re-pair would.
+    if (h.pendingContacts.size >= CONTACT_SYNC_MAX_BUFFER) {
+      this.flushPendingContacts(h);
+      return;
+    }
 
     if (h.syncDebounceTimer) clearTimeout(h.syncDebounceTimer);
     h.syncDebounceTimer = setTimeout(() => {
@@ -451,7 +477,20 @@ class SessionManager {
     if (h.disconnectPromise) return h.disconnectPromise;
 
     h.disconnectPromise = (async (): Promise<void> => {
+      // Let an in-flight open finish assigning h.sock before we tear down.
+      // runOpenSocket awaits fetchLatestWaWebVersion() *before* `h.sock = sock`,
+      // so a logout landing in that window would skip the `if (h.sock)` block
+      // entirely — never calling sock.logout(), wiping the auth dir, and then
+      // having the resolving handshake write the creds straight back and flip
+      // the row to 'connected'. No deadlock: runOpenSocket never awaits us.
       h.intentionalClose = true;
+      if (h.openPromise) {
+        try {
+          await h.openPromise;
+        } catch {
+          // open failed on its own — nothing left to tear down from it
+        }
+      }
       h.reconnectAttempts = 0;
       if (h.reconnectTimer) {
         clearTimeout(h.reconnectTimer);

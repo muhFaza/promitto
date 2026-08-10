@@ -58,6 +58,11 @@ async function shutdown(signal: string): Promise<void> {
         if (err) logger.error({ err }, 'Error during server close');
         resolve();
       });
+      // server.close() waits for every open connection to end on its own, and
+      // the /api/wa/events SSE streams never do. Without this the clean path is
+      // unreachable whenever anyone has the app open, and shutdown always falls
+      // through to the force-exit timer.
+      server.closeAllConnections();
     });
   })();
 
