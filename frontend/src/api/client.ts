@@ -17,17 +17,37 @@ type RequestOptions = {
   headers?: Record<string, string>;
 };
 
+const CSRF_COOKIE_NAME = 'promitto_csrf';
+const SAFE_METHODS = new Set(['GET', 'HEAD']);
+
+function readCsrfCookie(): string | null {
+  if (typeof document === 'undefined') return null;
+  const prefix = `${CSRF_COOKIE_NAME}=`;
+  for (const raw of document.cookie.split(';')) {
+    const c = raw.trim();
+    if (c.startsWith(prefix)) return decodeURIComponent(c.slice(prefix.length));
+  }
+  return null;
+}
+
 export async function apiRequest<T = unknown>(
   path: string,
   { method = 'GET', body, signal, headers = {} }: RequestOptions = {},
 ): Promise<T> {
   const url = path.startsWith('/') ? path : `/${path}`;
 
+  const csrfHeader: Record<string, string> = {};
+  if (!SAFE_METHODS.has(method)) {
+    const token = readCsrfCookie();
+    if (token) csrfHeader['X-CSRF-Token'] = token;
+  }
+
   const res = await fetch(url, {
     method,
     credentials: 'include',
     headers: {
       ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
+      ...csrfHeader,
       ...headers,
     },
     body: body !== undefined ? JSON.stringify(body) : undefined,

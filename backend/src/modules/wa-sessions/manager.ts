@@ -34,6 +34,8 @@ const baileysLogger = pino({
         : 'silent',
 });
 
+type PendingContact = { jid: string; displayName: string; phone: string };
+
 type Handle = {
   userId: string;
   sock: WASocket | null;
@@ -46,8 +48,19 @@ type Handle = {
   reconnectTimer: NodeJS.Timeout | null;
   reconnectAttempts: number;
   connectPromise: Promise<void> | null;
+  disconnectPromise: Promise<void> | null;
+  // In-flight openSocket() call. shutdown() awaits this so a SIGTERM during
+  // restoreAll() can't race openSocket's `h.sock = sock` assignment and leak
+  // a live Baileys connection.
+  openPromise: Promise<void> | null;
+  syncDebounceTimer: NodeJS.Timeout | null;
+  pendingContacts: Map<string, PendingContact>;
   intentionalClose: boolean;
 };
+
+const CONNECT_SETTLE_TIMEOUT_MS = 15_000;
+const CONTACT_SYNC_DEBOUNCE_MS = 2_000;
+const CONTACT_SYNC_MAX_BUFFER = 200;
 
 let cachedWaVersion: [number, number, number] | null = null;
 let versionFetchPromise: Promise<[number, number, number] | null> | null = null;
@@ -92,6 +105,10 @@ class SessionManager {
       reconnectTimer: null,
       reconnectAttempts: 0,
       connectPromise: null,
+      disconnectPromise: null,
+      openPromise: null,
+      syncDebounceTimer: null,
+      pendingContacts: new Map(),
       intentionalClose: false,
     };
     h.events.setMaxListeners(32);
@@ -119,24 +136,102 @@ class SessionManager {
 
   async connect(userId: string): Promise<void> {
     const h = this.ensureHandle(userId);
-    if (h.sock) return;
+
+    if (h.disconnectPromise) {
+      try {
+        await h.disconnectPromise;
+      } catch {
+        // ignored — we'll attempt a fresh connect below
+      }
+    }
+
+    // Already in a productive state *and* actually driving a socket — no new
+    // one needed. Gating on status as well as connectPromise closes the race
+    // where a caller arrives after runConnect's finally-block nulled
+    // connectPromise but the handle is already live, which would spawn a
+    // duplicate. The `h.sock` conjunct is load-bearing: on boot the handles map
+    // is empty and ensureHandle() seeds status straight from the DB row, so a
+    // restored 'connected' row would otherwise short-circuit restoreAll() into
+    // a no-op and leave every paired session socketless.
+    if (h.sock && (h.status === 'connected' || h.status === 'qr_pending')) return;
+
     if (h.connectPromise) return h.connectPromise;
 
-    h.reconnectAttempts = 0;
+    // Status is 'connecting' without a live connectPromise — runConnect's
+    // 15s settle guard resolved but the socket never transitioned. Wait for
+    // the next settle event rather than racing a second Baileys socket.
+    // Bounded by the same settle timeout: a reconnect ladder re-emits
+    // 'connecting' on every attempt and can run to a 60s backoff, so an
+    // unbounded wait would park the HTTP request for minutes and leak one
+    // listener per impatient retry onto the same emitter the SSE streams use.
+    if (h.status === 'connecting') {
+      h.reconnectAttempts = 0;
+      return new Promise<void>((resolve) => {
+        let settled = false;
+        const done = (): void => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          h.events.off('event', handler);
+          resolve();
+        };
+        const handler = (ev: SessionEvent): void => {
+          if (ev.type === 'status' && ev.value !== 'connecting') done();
+        };
+        const timer: NodeJS.Timeout = setTimeout(done, CONNECT_SETTLE_TIMEOUT_MS);
+        h.events.on('event', handler);
+      });
+    }
 
-    const promise = this.openSocket(h).catch((err: unknown) => {
-      logger.error({ err, userId }, 'wa connect failed');
-      this.setStatus(h, 'failed', { error: toMessage(err) });
-    });
-    h.connectPromise = promise;
+    h.reconnectAttempts = 0;
+    h.connectPromise = this.runConnect(h);
     try {
-      await promise;
+      await h.connectPromise;
     } finally {
       h.connectPromise = null;
     }
   }
 
-  private async openSocket(h: Handle): Promise<void> {
+  // Resolves when the socket reaches a settled state (connected / qr_pending /
+  // failed / logged_out / disconnected) or when CONNECT_SETTLE_TIMEOUT_MS
+  // elapses. The Baileys `connection.update` event is what promotes the status
+  // off 'connecting', so we listen to our own status events.
+  private runConnect(h: Handle): Promise<void> {
+    return new Promise<void>((resolve) => {
+      let settled = false;
+      const done = (): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        h.events.off('event', onEvent);
+        resolve();
+      };
+      const onEvent = (ev: SessionEvent): void => {
+        if (ev.type === 'status' && ev.value !== 'connecting') done();
+      };
+      const timer: NodeJS.Timeout = setTimeout(done, CONNECT_SETTLE_TIMEOUT_MS);
+      h.events.on('event', onEvent);
+
+      this.openSocket(h).catch((err: unknown) => {
+        logger.error({ err, userId: h.userId }, 'wa connect failed');
+        this.setStatus(h, 'failed', { error: toMessage(err) });
+        done();
+      });
+    });
+  }
+
+  // Public entrypoint: tracks the in-flight open so shutdown() can await it
+  // and avoid leaking a Baileys socket if SIGTERM arrives mid-handshake.
+  private openSocket(h: Handle): Promise<void> {
+    if (h.openPromise) return h.openPromise;
+    const promise = this.runOpenSocket(h).finally(() => {
+      if (h.openPromise === promise) h.openPromise = null;
+    });
+    h.openPromise = promise;
+    return promise;
+  }
+
+  private async runOpenSocket(h: Handle): Promise<void> {
     h.intentionalClose = false;
     if (h.reconnectTimer) {
       clearTimeout(h.reconnectTimer);
@@ -185,10 +280,16 @@ class SessionManager {
     });
   }
 
+  // Baileys emits contacts.upsert/update opportunistically with no "sync done"
+  // event. We buffer incoming rows per-user and flush after a 2s quiet window
+  // so one re-pair doesn't thrash SQLite with hundreds of single-row writes.
   private handleContactsSync(
     userId: string,
     cs: ReadonlyArray<Partial<BaileysContact>>,
   ): void {
+    const h = this.handles.get(userId);
+    if (!h) return;
+
     for (const c of cs) {
       const candidate = c.phoneNumber ?? c.id;
       if (!candidate || !isUserJid(candidate)) continue;
@@ -196,16 +297,50 @@ class SessionManager {
       if (!displayName) continue;
       const phone = phoneFromJid(candidate);
       if (!phone) continue;
+      h.pendingContacts.set(candidate, { jid: candidate, displayName, phone });
+    }
 
+    if (h.pendingContacts.size === 0) return;
+
+    // Hard cap on the buffer: the quiet window resets on every batch, and
+    // Baileys streams the initial post-pair sync in batches faster than 2s
+    // apart, so a pure debounce can be starved until the stream pauses. An
+    // ungraceful exit in that window loses the whole address book, and a plain
+    // reconnect won't re-emit it — only another re-pair would.
+    if (h.pendingContacts.size >= CONTACT_SYNC_MAX_BUFFER) {
+      this.flushPendingContacts(h);
+      return;
+    }
+
+    if (h.syncDebounceTimer) clearTimeout(h.syncDebounceTimer);
+    h.syncDebounceTimer = setTimeout(() => {
+      this.flushPendingContacts(h);
+    }, CONTACT_SYNC_DEBOUNCE_MS);
+  }
+
+  private flushPendingContacts(h: Handle): void {
+    if (h.syncDebounceTimer) {
+      clearTimeout(h.syncDebounceTimer);
+      h.syncDebounceTimer = null;
+    }
+    if (h.pendingContacts.size === 0) return;
+
+    const entries = Array.from(h.pendingContacts.values());
+    h.pendingContacts.clear();
+
+    for (const e of entries) {
       try {
         contactsService.upsertSynced({
-          userId,
-          jid: candidate,
-          displayName,
-          phone,
+          userId: h.userId,
+          jid: e.jid,
+          displayName: e.displayName,
+          phone: e.phone,
         });
       } catch (err) {
-        logger.warn({ err, userId, jid: candidate }, 'contacts upsertSynced failed');
+        logger.warn(
+          { err, userId: h.userId, jid: e.jid },
+          'contacts upsertSynced failed',
+        );
       }
     }
   }
@@ -339,32 +474,56 @@ class SessionManager {
       return;
     }
 
-    h.intentionalClose = true;
-    h.reconnectAttempts = 0;
-    if (h.reconnectTimer) {
-      clearTimeout(h.reconnectTimer);
-      h.reconnectTimer = null;
-    }
+    if (h.disconnectPromise) return h.disconnectPromise;
 
-    if (h.sock) {
-      try {
-        if (opts.logout) {
-          await h.sock.logout();
-        } else {
-          h.sock.end(undefined);
+    h.disconnectPromise = (async (): Promise<void> => {
+      // Let an in-flight open finish assigning h.sock before we tear down.
+      // runOpenSocket awaits fetchLatestWaWebVersion() *before* `h.sock = sock`,
+      // so a logout landing in that window would skip the `if (h.sock)` block
+      // entirely — never calling sock.logout(), wiping the auth dir, and then
+      // having the resolving handshake write the creds straight back and flip
+      // the row to 'connected'. No deadlock: runOpenSocket never awaits us.
+      h.intentionalClose = true;
+      if (h.openPromise) {
+        try {
+          await h.openPromise;
+        } catch {
+          // open failed on its own — nothing left to tear down from it
         }
-      } catch (err) {
-        logger.warn({ err, userId }, 'wa disconnect error');
       }
-      h.sock = null;
-    }
+      h.reconnectAttempts = 0;
+      if (h.reconnectTimer) {
+        clearTimeout(h.reconnectTimer);
+        h.reconnectTimer = null;
+      }
+      this.flushPendingContacts(h);
 
-    if (opts.logout) {
-      await this.wipeAuthState(h.authStatePath);
-      h.latestQr = null;
-      this.setStatus(h, 'logged_out', { error: null, jid: null });
-    } else {
-      this.setStatus(h, 'disconnected', { error: null });
+      if (h.sock) {
+        try {
+          if (opts.logout) {
+            await h.sock.logout();
+          } else {
+            h.sock.end(undefined);
+          }
+        } catch (err) {
+          logger.warn({ err, userId }, 'wa disconnect error');
+        }
+        h.sock = null;
+      }
+
+      if (opts.logout) {
+        await this.wipeAuthState(h.authStatePath);
+        h.latestQr = null;
+        this.setStatus(h, 'logged_out', { error: null, jid: null });
+      } else {
+        this.setStatus(h, 'disconnected', { error: null });
+      }
+    })();
+
+    try {
+      await h.disconnectPromise;
+    } finally {
+      h.disconnectPromise = null;
     }
   }
 
@@ -374,23 +533,46 @@ class SessionManager {
       logger.info({ cleared }, 'cleared orphan wa rows left in connecting/qr_pending');
     }
     const rows = listConnected();
-    for (const row of rows) {
-      try {
-        await this.connect(row.userId);
-        logger.info({ userId: row.userId }, 'wa session restored');
-      } catch (err) {
-        logger.error({ err, userId: row.userId }, 'wa session restore failed');
-      }
-    }
+    await Promise.allSettled(
+      rows.map((row) =>
+        this.connect(row.userId)
+          .then(() => logger.info({ userId: row.userId }, 'wa session restored'))
+          .catch((err: unknown) =>
+            logger.error({ err, userId: row.userId }, 'wa session restore failed'),
+          ),
+      ),
+    );
   }
 
   async shutdown(): Promise<void> {
+    // Mark everything intentional first so any in-flight openSocket that
+    // settles after this point won't trigger a reconnect loop via the close
+    // handler.
+    const inFlightOpens: Promise<void>[] = [];
     for (const h of this.handles.values()) {
       h.intentionalClose = true;
       if (h.reconnectTimer) {
         clearTimeout(h.reconnectTimer);
         h.reconnectTimer = null;
       }
+      if (h.openPromise) inFlightOpens.push(h.openPromise);
+    }
+
+    // Wait for any openSocket() calls that are mid-handshake so their
+    // `h.sock = sock` assignment happens before we try to close sockets.
+    if (inFlightOpens.length > 0) {
+      await Promise.allSettled(inFlightOpens);
+    }
+
+    for (const h of this.handles.values()) {
+      // Explicit: flushPendingContacts clears this today, but the invariant
+      // shouldn't depend on that — a dangling timer firing during exit would
+      // try to write to a closing DB handle.
+      if (h.syncDebounceTimer) {
+        clearTimeout(h.syncDebounceTimer);
+        h.syncDebounceTimer = null;
+      }
+      this.flushPendingContacts(h);
       if (h.sock) {
         try {
           h.sock.end(undefined);

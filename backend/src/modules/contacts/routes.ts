@@ -5,11 +5,13 @@ import { errors } from '../../lib/errors.js';
 import { isUserJid } from '../../lib/jid.js';
 import { normalizeToE164 } from '../../lib/phone.js';
 import { requireAuth } from '../../middleware/auth.js';
+import { requireCsrf } from '../../middleware/csrf.js';
+import { requirePasswordRotated } from '../../middleware/password-gate.js';
 import { sessionManager } from '../wa-sessions/manager.js';
 import * as service from './service.js';
 
 export const contactsRouter: Router = Router();
-contactsRouter.use(requireAuth);
+contactsRouter.use(requireAuth, requirePasswordRotated, requireCsrf);
 
 const ListQuery = z.object({
   search: z.string().max(200).optional(),

@@ -1,7 +1,7 @@
 import { and, eq, gt, sql } from 'drizzle-orm';
 import { db } from '../../db/client.js';
 import { sessions, users, type Session, type User } from '../../db/schema.js';
-import { SESSION_DURATION_MS } from '../../config/constants.js';
+import { ABSOLUTE_SESSION_MAX_MS, SESSION_DURATION_MS } from '../../config/constants.js';
 import { generateSessionId } from '../../lib/session-id.js';
 
 type CreateSessionInput = {
@@ -51,8 +51,17 @@ export function getSessionWithUser(
 }
 
 export function touchSession(sessionId: string): void {
+  const now = new Date();
+  // Slide the 30-day window, but never past createdAt + ABSOLUTE_SESSION_MAX_MS.
+  // Computed in SQL so it stays a single UPDATE with no read-modify-write race.
   db.update(sessions)
-    .set({ lastSeenAt: new Date() })
+    .set({
+      lastSeenAt: now,
+      expiresAt: sql`min(
+        ${now.getTime() + SESSION_DURATION_MS},
+        ${sessions.createdAt} + ${ABSOLUTE_SESSION_MAX_MS}
+      )`,
+    })
     .where(eq(sessions.id, sessionId))
     .run();
 }
@@ -69,6 +78,17 @@ export function deleteAllSessionsForUser(userId: string, exceptSessionId?: strin
   } else {
     db.delete(sessions).where(eq(sessions.userId, userId)).run();
   }
+}
+
+// Login-time housekeeping. Multi-device is supported by design, so logging in
+// must NOT revoke the user's other live sessions — only reap dead rows, which
+// would otherwise accumulate forever now that nothing else prunes them.
+// Admin-initiated revocation (disable / delete / reset-password) still uses
+// deleteAllSessionsForUser and is unaffected.
+export function deleteExpiredSessionsForUser(userId: string): void {
+  db.delete(sessions)
+    .where(and(eq(sessions.userId, userId), sql`${sessions.expiresAt} <= ${Date.now()}`))
+    .run();
 }
 
 export function findUserByEmail(email: string): User | null {

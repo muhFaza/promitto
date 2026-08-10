@@ -16,6 +16,9 @@ export const users = sqliteTable('users', {
     .default('user'),
   timezone: text('timezone').notNull(),
   disabledAt: integer('disabled_at', { mode: 'timestamp_ms' }),
+  mustChangePassword: integer('must_change_password', { mode: 'boolean' })
+    .notNull()
+    .default(false),
   createdAt: integer('created_at', { mode: 'timestamp_ms' })
     .notNull()
     .default(sql`(unixepoch() * 1000)`),

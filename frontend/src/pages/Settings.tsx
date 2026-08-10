@@ -12,7 +12,9 @@ import { useUiStore } from '../stores/ui';
 export function Settings() {
   const user = useAuthStore((s) => s.user);
   const setUser = useAuthStore((s) => s.setUser);
+  const fetchMe = useAuthStore((s) => s.fetchMe);
   const pushToast = useUiStore((s) => s.pushToast);
+  const mustChange = user?.mustChangePassword === true;
 
   const [timezones, setTimezones] = useState<string[]>([]);
   const [tz, setTz] = useState(user?.timezone ?? '');
@@ -69,6 +71,7 @@ export function Settings() {
       setCurrentPw('');
       setNewPw('');
       setNewPw2('');
+      await fetchMe();
       pushToast({
         message: 'Password changed. Other sessions revoked.',
         level: 'success',
@@ -91,7 +94,20 @@ export function Settings() {
           </h1>
         </header>
 
-        <section className="border-y border-rule py-8">
+        {mustChange && (
+          <div
+            className="border-l-2 border-accent-warm bg-amber-soft/30 px-4 py-3 text-[13px] text-ink"
+            role="alert"
+          >
+            <div className="eyebrow text-accent-warm">Action required</div>
+            <p className="mt-1">
+              Set a new password before you can continue. Temporary passwords are
+              single-use.
+            </p>
+          </div>
+        )}
+
+        <section className={`${mustChange ? 'pointer-events-none opacity-40 ' : ''}border-y border-rule py-8`}>
           <div className="eyebrow">Timezone</div>
           <h2 className="mt-1 font-display text-2xl italic text-ink">
             Where does "now" mean now.
