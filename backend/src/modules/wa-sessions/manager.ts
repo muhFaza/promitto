@@ -503,7 +503,7 @@ class SessionManager {
           if (opts.logout) {
             await h.sock.logout();
           } else {
-            h.sock.end(undefined);
+            await h.sock.end(undefined);
           }
         } catch (err) {
           logger.warn({ err, userId }, 'wa disconnect error');
@@ -575,7 +575,7 @@ class SessionManager {
       this.flushPendingContacts(h);
       if (h.sock) {
         try {
-          h.sock.end(undefined);
+          await h.sock.end(undefined);
         } catch (err) {
           logger.warn({ err, userId: h.userId }, 'shutdown: end() error');
         }

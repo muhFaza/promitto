@@ -90,6 +90,7 @@ Read `modules/scheduler/{poller,service}.ts` together before touching either.
 
 `SessionManager` keeps a `Handle` per user: socket, status, latest QR, an `EventEmitter` that feeds the `/api/wa/events` SSE stream, and reconnect bookkeeping. DB (`wa_connections`) is the durable mirror; the handle is the truth while the process lives.
 
+- Pinned exact at `7.0.0-rc14` (no caret) — rc12 fixed CVE-2026-48063. `sock.end()` returns a `Promise` as of rc14, so every call site must `await` it or `shutdown()` returns before the sockets are actually closed. It pulls in `whatsapp-rust-bridge` (WASM, prebuilt — no native toolchain, and the builder no longer needs `git` now that `libsignal` comes from npm).
 - Call `fetchLatestWaWebVersion()` before `makeWASocket()` (cached process-wide) — hardcoded versions go stale and break the Noise handshake.
 - Auth state = `backend/data/sessions/{userId}`, **0700 dir / 0600 files**, re-chmod'd on every `creds.update`. Don't loosen this; Baileys creds are as sensitive as the WA session itself.
 - **WA closes sockets with no statusCode.** `message === 'disconnected'` and `statusCode === undefined` is normal server-side drop, not a logout. Reconnect is exponential (`2^n`, capped 60s) up to `MAX_RECONNECT_ATTEMPTS = 5`, then `failed` with a readable error.
