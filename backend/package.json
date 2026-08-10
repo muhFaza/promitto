@@ -18,7 +18,7 @@
   "dependencies": {
     "@hapi/boom": "^10.0.1",
     "@inquirer/prompts": "^7.0.1",
-    "@whiskeysockets/baileys": "7.0.0-rc.9",
+    "@whiskeysockets/baileys": "7.0.0-rc14",
     "argon2": "^0.41.1",
     "better-sqlite3": "^11.5.0",
     "cookie-parser": "^1.4.7",

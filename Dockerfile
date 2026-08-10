@@ -8,7 +8,7 @@ RUN npm run build
 
 ### ---- backend-builder ----
 FROM node:20-alpine AS backend-builder
-RUN apk add --no-cache python3 make g++ sqlite git
+RUN apk add --no-cache python3 make g++ sqlite
 WORKDIR /app/backend
 COPY backend/package*.json ./
 RUN npm ci

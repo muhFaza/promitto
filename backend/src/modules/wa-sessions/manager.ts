@@ -351,7 +351,7 @@ class SessionManager {
         if (opts.logout) {
           await h.sock.logout();
         } else {
-          h.sock.end(undefined);
+          await h.sock.end(undefined);
         }
       } catch (err) {
         logger.warn({ err, userId }, 'wa disconnect error');
@@ -385,15 +385,22 @@ class SessionManager {
   }
 
   async shutdown(): Promise<void> {
-    for (const h of this.handles.values()) {
+    // Flag every handle before awaiting any close: end() yields, and a socket
+    // dropped in that window would otherwise be treated as an unexpected close
+    // and schedule a reconnect mid-shutdown.
+    const handles = [...this.handles.values()];
+    for (const h of handles) {
       h.intentionalClose = true;
       if (h.reconnectTimer) {
         clearTimeout(h.reconnectTimer);
         h.reconnectTimer = null;
       }
+    }
+
+    for (const h of handles) {
       if (h.sock) {
         try {
-          h.sock.end(undefined);
+          await h.sock.end(undefined);
         } catch (err) {
           logger.warn({ err, userId: h.userId }, 'shutdown: end() error');
         }
