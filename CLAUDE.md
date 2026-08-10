@@ -1,169 +1,151 @@
-# Promitto — Claude notes
+# CLAUDE.md
 
-Self-hosted WhatsApp scheduler. One VPS, one container, SQLite, Baileys. No SaaS, no signup, admin-provisions users.
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Stack at a glance
+Promitto is a self-hosted WhatsApp message scheduler. One VPS, one container, SQLite, Baileys. No SaaS, no signup, admin-provisions users. Prod: `https://wa.muhfaza.my.id`.
 
-- **Backend**: Node 20 + Express 4 + TypeScript, SQLite via Drizzle ORM, Baileys (`@whiskeysockets/baileys` 7.0.0-rc.9)
-- **Frontend**: Vite + React 18 + TS + Tailwind + Zustand + React Router v6
-- **Runtime**: single Docker container behind Traefik v3.2 on the shared `web` network
-- **Prod domain**: `wa.muhfaza.my.id`
+## Commands
 
-## Layout
-
-```
-backend/src/
-  main.ts                  entry, wires server + poller + wa-manager + SIGTERM
-  server.ts                Express app, CORS, /api/health, SPA fallback (prod)
-  config/                  env.ts (zod-validated), constants.ts
-  db/                      client.ts, schema.ts, migrate.ts  (0700/0600 perms enforced)
-  middleware/auth.ts       requireAuth / requireSuperuser (reads signed session cookie)
-  lib/
-    cookie-signer.ts       HMAC-SHA256 signing of session IDs with SESSION_SECRET
-    password.ts            Argon2id
-    session-id.ts          opaque random tokens
-    cron.ts, timezone.ts   cron-parser v5 + luxon
-    phone.ts, jid.ts       libphonenumber-js (ID default) + JID helpers
-  modules/
-    auth/                  login/logout/me/reset
-    users/                 superuser CRUD + disable
-    contacts/              CRUD + search + sync-upsert from Baileys
-    wa-sessions/manager.ts SessionManager (singleton); per-user Baileys socket + SSE bus
-    scheduler/             routes + service (BEGIN IMMEDIATE claim) + poller (30s tick)
-    settings/              per-user timezone
-  cli/                     create-superuser.ts, reset-superuser-password.ts
-  scripts/                 test-seed-* helpers (non-interactive for CI)
-
-frontend/src/
-  main.tsx, App.tsx        routes under /app, RequireAuth wrapper
-  pages/
-    Login                  Fraunces-masthead sign-in
-    Dashboard              primary compose surface — masthead + WA card + ComposeScheduleForm + "next up" + nav rail
-    WhatsApp               pairing / QR / disconnect
-    Contacts, Settings, Admin
-    Schedule               list-only (Upcoming / Recurring / History / Failed). Compose lives on Dashboard; this page has a "+ Compose" link back to `/app#compose`.
-  components/
-    ComposeScheduleForm    shared compose form (recipient + message + once/recurring + cron preview + submit)
-    ContactPicker          single-select autocomplete; uses contacts.list with search
-    WaStatusIndicator      WaStatusDot + WaStatusLabel (AppHeader + Dashboard)
-    InstallButton, RequireAuth, ui/*
-  stores/                  auth, contacts, schedule, ui, wa  (Zustand v5 curried form)
-  api/                     client.ts, sse.ts + per-module wrappers
-  lib/                     dates (luxon), cn, types
-  public/                  manifest.webmanifest, sw.js (shell-only), icons
-
-deploy/
-  entrypoint.sh            migrate → node dist/main.js
-  backup.sh                tarball backend/data to ~/promitto-backups (UTC stamp)
-```
-
-## Frontend design system
-
-Aesthetic: **"quiet utility ledger"** — warm paper + ink, deliberate typography, hairline borders instead of cards-with-shadows. Keep it that way.
-
-- **Palette** (`tailwind.config.js`): `paper` (cream `#F5F1E8`) / `paper-raised` / `ink` (near-black) / `ink-soft` / `ink-muted` / `rule` (warm hairline) / `accent` (olive `#5C6B3E`, "live/success") / `accent-warm` (terracotta `#A8583A`, "destructive/failed") / `amber-soft` (warnings). No `slate-*`, no `emerald-*`, no `red-*` — use the tokens.
-- **Fonts** (loaded from Google Fonts in `index.html`):
-  - `font-display` → **Fraunces** (variable serif, italic for H1/H2/section titles)
-  - `font-sans` → **Geist** (body, labels, buttons)
-  - `font-mono` → **Geist Mono** (identifiers only)
-- **Mono is reserved for machine-generated data**: timestamps, JIDs, phone numbers, cron expressions, emails. **Do not use mono for prose, hints, error text, badge labels, or tab labels** — it reads like typewriter noise.
-- **Headings** use Fraunces italic. Section eyebrows use the `.eyebrow` utility in `index.css` (Geist uppercase tracking-caps, sans). Do not invent new heading styles.
-- **Structure**: hairline rules (`border-rule`, `<hr>`) separate sections. Cards = `.ledger-card` (border + paper-raised bg) or inline `border border-rule bg-paper-raised`. No rounded-xl / drop-shadow defaults.
-- **Motion**: CSS-only (`animate-fadeInUp` for page entrances, `animate-ping` on pending WA status). Don't pull in framer-motion.
-
-## Key constraints (don't expand scope)
-
-- **Single instance.** Poller and `SessionManager` are process singletons. Never run replicas.
-- **Text messages only.** No media, no templates, no blasts.
-- **One WhatsApp number per user.**
-- **No signup.** Superuser creates accounts via CLI. First superuser bootstrapped via `cli/create-superuser.ts`.
-- **Superuser reset is CLI-only.** No email, no recovery link. Intentional.
-- **Admin-provisioned.** Temp passwords shown once; user must rotate on first login.
-- **Hard sends are warnings, not caps.** UI warns on ≥10 pending or any recurring create — no blocking.
-
-## Auth model
-
-- Passwords → Argon2id (`lib/password.ts`)
-- Sessions → opaque random token, HttpOnly cookie, **signed** with `SESSION_SECRET` via HMAC-SHA256 (`lib/cookie-signer.ts`). Rotating `SESSION_SECRET` invalidates all sessions by design.
-- CSRF tokens → HMAC-SHA256 of session id, keyed by `CSRF_SECRET` (`lib/csrf.ts`). Falls back to `SESSION_SECRET` when unset; set distinct in production to separate HMAC keyspace. Rotating invalidates outstanding CSRF cookies on next login.
-- `requireAuth` middleware calls `readSignedSessionId()` → `getSessionWithUser()` → `touchSession()` → `setCsrfCookie()` (sliding TTL on both session row and CSRF cookie `maxAge`)
-- Superuser gating via `requireSuperuser` (checks `req.user.role === 'superuser'`)
-- Login wraps session revocation + new-session insert in a single `sqlite.transaction().immediate()` so concurrent double-submits can't leave multiple live sessions.
-
-## Scheduler invariants
-
-- **Atomic claim**: `BEGIN IMMEDIATE` then `UPDATE ... SET state='sending' WHERE id=? AND state='pending'` — prevents double-dispatch even with overlapping ticks.
-- **Jitter**: 2–8s random delay before send to avoid burst patterns.
-- **Retry backoff**: `[30s, 2m, 10m]` — 3 attempts then `failed`.
-- **Tick**: 30s. Picks up to N due rows per tick.
-- **Timezones**: stored per-user (IANA), evaluated with luxon; cron next-run computed in user TZ, stored as UTC ms.
-
-## Baileys quirks worth remembering
-
-- Use `fetchLatestWaWebVersion()` before `makeWASocket()` — hardcoded versions go stale and break the Noise handshake.
-- Auth state dir = `backend/data/sessions/{userId}` with 0700/0600 perms enforced on every creds save.
-- Contact sync is **opportunistic** — `contacts.upsert` and `contacts.update` fire post-pair; no "sync complete" event. Done-detection is a heuristic (debounced quiet window).
-- JIDs use `@s.whatsapp.net`; group JIDs (`@g.us`) are rejected at `isUserJid()`.
-- **WA can close a socket without a statusCode.** `lastDisconnect.error.message === 'disconnected'` with `statusCode === undefined` is common (server-side drop, no 401). Don't interpret this as "retry forever" — we cap at `MAX_RECONNECT_ATTEMPTS = 5`, then transition to `failed` with a readable error.
-- **`reconnectAttempts` must reset on manual `connect()` and `disconnect()`** — otherwise a user hitting the cap can never recover via the UI. The 'open' handler also resets it to 0 on success.
-- **`shutdown()` MUST set `h.intentionalClose = true` before `sock.end()`.** Otherwise Baileys fires `connection: 'close'` → `handleConnectionUpdate` sees `intentionalClose: false` → flips the DB row to `connecting` → on next boot, the user is stuck in a phantom connecting state with no active socket.
-- **`restoreAll()` normalizes orphan rows before restoring.** Any `connecting`/`qr_pending` in DB at boot is a lie (the in-memory handle that was driving it is gone) — `clearOrphanConnecting()` resets them to `disconnected` so the UI matches reality.
-- `BAILEYS_LOG_LEVEL` env var (default `silent`) lets prod surface Baileys' internal socket lifecycle at `info`/`warn` for live diagnostics without rebuilding.
-
-## Dev (Docker)
+Everything runs in Docker; you don't need Node on the host.
 
 ```bash
 cp backend/.env.example backend/.env       # defaults are fine for SQLite dev
-docker compose up --build                  # backend:3000, frontend:5173
+docker compose up --build                  # backend :3000, frontend :5173
 
-docker compose exec backend npm run typecheck
-docker compose exec backend npm run lint
+docker compose exec backend  npm run typecheck   # tsc --noEmit
+docker compose exec backend  npm run lint        # eslint .
 docker compose exec frontend npm run typecheck
 docker compose exec frontend npm run lint
 
-docker compose exec backend npm run db:generate   # after schema.ts edits
+docker compose exec backend npm run db:generate  # after editing db/schema.ts
 docker compose exec backend npm run db:migrate
 
 docker compose exec backend npm run cli:create-superuser
 docker compose exec backend npm run cli:reset-superuser-password
 ```
 
-Dev note: dev compose uses a named volume for `backend/node_modules`. After changing `backend/package.json`, run `docker compose run --rm backend npm install` or rebuild — otherwise the volume masks the new deps.
+**There is no test framework.** No `test` script, no runner, no `*.test.ts` anywhere — so there is no "run a single test". Verification is `typecheck` + `lint` + exercising the app. If you add tests, you are also picking the runner; say so rather than assuming one exists.
 
-## Prod (Docker)
+`backend/scripts/test-*.ts` are **not** tests — they are non-interactive stand-ins for the `@inquirer/prompts` CLIs (which need a TTY), e.g. `tsx scripts/test-seed-superuser.ts <email> <password>`.
 
-```bash
-# one-time
-cp .env.production.example .env
-openssl rand -base64 48                    # paste into SESSION_SECRET=
+Dev-compose gotcha: `backend/node_modules` is a named volume. After changing `backend/package.json`, run `docker compose run --rm backend npm install` or rebuild — otherwise the volume masks the new deps.
 
-# deploy / upgrade
-./deploy/backup.sh                         # always snapshot first
-docker compose -f docker-compose.prod.yml up -d --build
-docker compose -f docker-compose.prod.yml logs -f promitto | head
+## Architecture
 
-# first superuser (TTY required)
-docker compose -f docker-compose.prod.yml exec promitto node dist/cli/create-superuser.js
+### One process, three long-lived things
 
-# health
-curl https://wa.muhfaza.my.id/api/health
-```
+`backend/src/main.ts` starts the Express server, then `sessionManager.restoreAll()` and `schedulerPoller.start()`, and tears all three down on SIGTERM/SIGINT. `process.umask(0o077)` is set as the very first statement, before any import, so every file the process creates (SQLite DB, Baileys creds) is private by default.
 
-The entrypoint runs `db:migrate` before starting the server. Migrations must be backward-compatible with the previous release in case of rollback.
+Both the poller and the `SessionManager` are **module-level singletons holding in-memory state** (open sockets, tick locks). This is why replicas are forbidden — two processes would double-send and fight over the same WA sockets.
 
-## Things that break silently if you miss them
+### Request path
 
-- `SESSION_SECRET` must be ≥32 chars; env schema rejects short ones at boot. `CSRF_SECRET` has the same floor but is optional (falls back to `SESSION_SECRET`).
-- Tests/CLIs that pipe stdin can't use `@inquirer/prompts` (needs a TTY). Use `scripts/test-*` helpers for non-interactive flows.
-- Empty Zustand generic arg trips the eslint empty-type rule — use the v5 curried form: `create<State>()((set) => (...))`.
-- Drizzle 0.36.x index API: pass a plain object `(t) => ({ idx: index(...) })`, not an array.
-- The service worker must **never** cache `/api/*`. Shell-only caching; everything else is network-first.
-- Traefik `web` network must be attached explicitly; `exposedByDefault=false` means no labels = no routing.
+`server.ts` → `requestLogger` → `express.json({limit:'1mb'})` → `cookieParser` → `/api/health` → six routers → `errorMiddleware`. No CORS middleware: dev goes through Vite's `/api` proxy (`VITE_PROXY_TARGET`), prod is same-origin because the same Express process serves `frontend/dist` with an SPA fallback for any non-`/api` GET.
 
-## What NOT to do
+Routers and their gating:
 
-- Don't introduce Redis, BullMQ, or multi-replica anything. If you outgrow one VPS, rewrite — don't retrofit.
-- Don't add `/signup`, password recovery, or email flows. Breaks the threat model.
-- Don't widen scope to media, templates, broadcasts, or groups.
-- Don't reduce auth-state file perms (0700 dir / 0600 files). Baileys creds are as sensitive as the WA session itself.
-- Don't skip `backup.sh` before an upgrade with pending migrations.
+| Mount | Gate | Notes |
+|---|---|---|
+| `/api/auth` | none (`/me` uses `requireAuth`) | `login`, `logout`, `me` |
+| `/api/users` | `requireAuth` + `requireSuperuser` | list/create/disable/enable/reset-password/delete |
+| `/api/wa` | `requireAuth` | `connect`, `disconnect`, `logout`, `status`, `events` (SSE) |
+| `/api/contacts` | `requireAuth` | list (search, limit capped 200), create, rename, delete |
+| `/api/scheduler` | `requireAuth` | create, list (`?status=upcoming\|recurring\|history\|failed`), `stats`, `preview`, patch, cancel |
+| `/api/settings` | `requireAuth` | password, timezone, timezone list |
+
+Every module follows `routes.ts` (zod parsing + HTTP) → `service.ts` (Drizzle, synchronous better-sqlite3). Services take `userId` as the first argument and scope every query by it — that per-query `userId` filter *is* the tenancy boundary; there is no row-level security underneath it.
+
+### Wire conventions
+
+- **Errors**: throw `errors.*()` from `lib/errors.ts`; `errorMiddleware` renders `{ error: { code, message, details? } }`. Bare `ZodError` is auto-converted to a 400 `validation_error`. The frontend's `apiRequest` unwraps that envelope into an `ApiError`.
+- **Timestamps**: SQLite stores `timestamp_ms` integers; serializers (`lib/scheduled-message.ts`, `lib/contact.ts`, `lib/user.ts`) emit **epoch-ms numbers**, never ISO strings. The frontend formats with luxon in the user's TZ.
+- **Never return a raw DB row** — go through the serializer, or you leak `passwordHash`, `pickedAt`, and friends.
+
+### Data model (`backend/src/db/schema.ts`)
+
+`users` → `sessions`, `wa_connections` (PK is `user_id`, so one WA number per user by construction), `contacts` (unique on `user_id + jid`), `scheduled_messages`, `sent_messages`. All child tables cascade on user delete. Migrations are Drizzle SQL files in `backend/drizzle/`; the prod entrypoint applies them before the server boots, so **every migration must be backward-compatible with the previous release** in case of rollback.
+
+`sent_messages` is an append-only attempt log, one row per send attempt (success *and* failure) — it is not a mirror of `scheduled_messages`. "History" and "Failed" in the UI are both reads of this table.
+
+### Frontend
+
+Vite + React 18 + Zustand v5 + React Router v6. All routes live under `/app` behind `RequireAuth` (`requireSuperuser` for `/app/admin`); `/` and `*` redirect to `/app`. State lives in five Zustand stores (`auth`, `contacts`, `schedule`, `ui`, `wa`); `api/*` wraps `apiRequest`, and `api/sse.ts` wraps `EventSource`.
+
+Compose lives on the **Dashboard**, not on `/app/schedule` — the Schedule page is list-only and links back to `/app#compose`.
+
+## Scheduler invariants
+
+Read `modules/scheduler/{poller,service}.ts` together before touching either.
+
+- **Atomic claim**: `pickDue()` runs inside `BEGIN IMMEDIATE`, selects rows where `is_active = 1 AND next_run_at <= now AND picked_at IS NULL`, stamps `picked_at = now`, commits. There is no `state` column — `picked_at` *is* the lease. Every terminal path in `service.ts` must reset `picked_at = null`.
+- **Lease recovery**: a crash between claim and record would strand `picked_at` and make the row invisible to `pickDue()` forever, so `poller.start()` calls `releaseStaleLeases()` before the first tick. Single-instance means any lease present at boot is orphaned by definition — the same reasoning as `clearOrphanConnecting()` on the WA side. It logs at `warn` when it clears anything, which is your signal the last shutdown was unclean.
+- **Tick**: 30s, plus one immediate tick at boot; ≤50 rows per tick; a `ticking` flag makes overlapping ticks a no-op, and rows are processed **sequentially**, not in parallel.
+- **Jitter**: 2–8s random sleep before each send (`lib/jitter.ts`), inside the sequential loop — a full tick of 50 messages therefore takes minutes by design.
+- **Retries**: `MAX_RETRIES = 3` counts *total* attempts, so there are only two retries, at 30s and 2m. The third entry of `BACKOFF_MS` (10m) is unreachable dead config — don't cite it as behaviour.
+- **On exhaustion**: `once` → `is_active = false`. `recurring` → skip to the next natural cron occurrence and reset `retry_count` (a recurring schedule never dies from send failures, only from a cron expression that stops parsing, which deactivates it).
+- **Timezones**: per-user IANA, stored on the row at create time. `next_run_at` is computed by cron-parser in that TZ and persisted as UTC ms.
+- Editing is only allowed while `is_active`; `once` rows take `nextRunAt` and reject `cronExpression`, `recurring` rows take `cronExpression` and reject `nextRunAt` (it is always derived).
+
+## WhatsApp / Baileys (`modules/wa-sessions/manager.ts`)
+
+`SessionManager` keeps a `Handle` per user: socket, status, latest QR, an `EventEmitter` that feeds the `/api/wa/events` SSE stream, and reconnect bookkeeping. DB (`wa_connections`) is the durable mirror; the handle is the truth while the process lives.
+
+- Call `fetchLatestWaWebVersion()` before `makeWASocket()` (cached process-wide) — hardcoded versions go stale and break the Noise handshake.
+- Auth state = `backend/data/sessions/{userId}`, **0700 dir / 0600 files**, re-chmod'd on every `creds.update`. Don't loosen this; Baileys creds are as sensitive as the WA session itself.
+- **WA closes sockets with no statusCode.** `message === 'disconnected'` and `statusCode === undefined` is normal server-side drop, not a logout. Reconnect is exponential (`2^n`, capped 60s) up to `MAX_RECONNECT_ATTEMPTS = 5`, then `failed` with a readable error.
+- **`reconnectAttempts` must reset on manual `connect()` and `disconnect()`** (and does on `'open'`) — otherwise a user who hits the cap can never recover from the UI.
+- **`shutdown()` and `disconnect()` MUST set `intentionalClose = true` before `sock.end()`.** Otherwise the close handler treats it as a drop, flips the DB row to `connecting`, and the next boot shows a phantom connecting state with no socket behind it.
+- **`restoreAll()` calls `clearOrphanConnecting()` first.** Any `connecting`/`qr_pending` row at boot is a lie; it is reset to `disconnected` so the UI matches reality. Only `connected` rows are restored.
+- Contact sync is **opportunistic and stateless**: `contacts.upsert`/`contacts.update` fire post-pair and each is upserted immediately. There is no "sync complete" event and no done-detection — don't build UI that waits for one.
+- Only `^[0-9]+@s\.whatsapp\.net$` passes `isUserJid()`; groups (`@g.us`) are rejected at the router. Phone input is normalized by `libphonenumber-js` with **`ID` as the default region** (`0812…` and `62812…` both → `+62812…`).
+- The `jid` stored on `wa_connections` is `normalizeOwnJid()`'d to a bare `+62…` phone string, not a real JID. Contact/recipient JIDs are the real thing.
+- `BAILEYS_LOG_LEVEL` (default `silent`) surfaces Baileys' socket lifecycle in prod without a rebuild.
+
+## Auth model
+
+- Passwords → Argon2id (`lib/password.ts`).
+- Sessions → opaque random token in an HttpOnly cookie named `promitto_sid`, **HMAC-SHA256-signed** with `SESSION_SECRET` (`lib/cookie-signer.ts`), 30-day duration. Rotating `SESSION_SECRET` invalidates every session by design.
+- `requireAuth`: `readSignedSessionId()` → `getSessionWithUser()` → reject if `user.disabledAt` → `touchSession()` → populate `req.user` / `req.session`.
+- Login is rate-limited by two in-memory token buckets (`modules/auth/rate-limit.ts`): per-IP 20 burst / 1 per 2s, per-email 5 burst / 1 per 30s. In-memory means **a restart clears them** and `TRUST_PROXY` must be on in prod or every request shares Traefik's IP.
+
+## Frontend design system
+
+Aesthetic: **"quiet utility ledger"** — warm paper + ink, deliberate typography, hairline borders instead of cards-with-shadows. Keep it that way.
+
+- **Palette** (`tailwind.config.js`): `paper` / `paper-raised` / `paper-deep`, `ink` / `ink-soft` / `ink-muted`, `rule` / `rule-strong`, `accent` (olive — live/success), `accent-warm` (terracotta — destructive/failed), `amber-soft` (warnings). No `slate-*`, `emerald-*`, or `red-*` — use the tokens.
+- **Fonts** (Google Fonts, `index.html`): `font-display` → Fraunces (variable serif, italic for H1/H2/section titles), `font-sans` → Geist, `font-mono` → Geist Mono.
+- **Mono is reserved for machine-generated data**: timestamps, JIDs, phone numbers, cron expressions, emails. Never for prose, hints, error text, badge labels, or tab labels.
+- **Structure**: hairline rules (`border-rule`, `<hr>`) separate sections. Cards use `.ledger-card`; eyebrows use `.eyebrow` (both in `index.css`). No rounded-xl or drop-shadow defaults.
+- **Motion**: CSS-only (`animate-fadeInUp`, `animate-ping` on pending WA status). Don't add framer-motion.
+
+## Scope — do not expand
+
+- **Single instance.** Never run replicas. If you outgrow one VPS, rewrite (Redis + BullMQ + leader election) — don't retrofit.
+- **Text messages only.** No media, templates, broadcasts, or groups.
+- **One WhatsApp number per user**, enforced by the `wa_connections` primary key.
+- **No signup, no password recovery, no email flows.** Superuser-provisioned only; temp passwords are shown once. Superuser reset is CLI-only, deliberately.
+- **Hard sends are warnings, not caps.** The UI warns at ≥10 pending or on any recurring create — it never blocks.
+
+## Production
+
+Single container behind Traefik v3.2 on the shared external `web` network, TLS via the `le` certresolver, HSTS middleware, `TRUST_PROXY=true`. The image builds the frontend and backend in separate stages and runs as `node`; the entrypoint runs `db:migrate` then `node dist/main.js`. Everything stateful is the `./backend/data` bind mount: `promitto.db` (WAL) plus every user's Baileys auth state.
+
+**Deploys are automated.** Pushing to `main` (anything but Markdown) runs `.github/workflows/deploy.yml`: build on the runner → rotate `promitto:deploy` to `promitto:previous` → `docker save | gzip | ssh 'docker load'` → scp the compose file → `up -d` → poll `/api/health`, rolling back to `promitto:previous` if it never goes green. `workflow_dispatch` deploys the current `main` on demand.
+
+Deployed at `~/promitto` on the personal VPS. **Read `../CLAUDE.md` (and `~/CLAUDE.md` on the server) before touching the deployment** — that is where host-level rules live; don't duplicate them here. Promitto-specific points:
+
+- **`docker-compose.prod.yml` has no `build:` key on purpose.** The box has ~960MB RAM and Node builds have been OOM-killed on it. `up -d --build` will fail, and that is the guard working — build elsewhere for `linux/amd64` and ship the image in. `mem_limit: 384m` matches how every other service on the box is capped.
+- The container holds a **live paired WhatsApp session**. Every deploy restarts it: sockets drop, `restoreAll()` re-handshakes from `backend/data/sessions/`, and a session that fails to restore needs a QR re-pair from the phone. This is the standing cost of auto-deploy — batch merges rather than pushing to `main` repeatedly.
+- **There are no backups — none scheduled, and the deploy takes none.** Removed deliberately on 2026-08-10 at the owner's instruction; the archives and the cron are gone. `deploy/backup.sh` still exists as a manual tool if you ever want a snapshot, but nothing invokes it.
+- **Rolling the image back does not roll the schema back, and there is nothing to restore from.** A destructive or non-backward-compatible migration is therefore unrecoverable — it takes the accounts, contacts, schedules, and every paired WhatsApp session with it. This raises the bar on migration review considerably; treat it as the primary risk in any schema change.
+- Losing `sessions/{userId}/` costs that user a re-pair; losing `promitto.db` costs all accounts, contacts, and schedules.
+
+## Breaks silently if you miss it
+
+- `SESSION_SECRET` must be ≥32 chars — the zod env schema `process.exit(1)`s at boot otherwise, and there is no other validation layer.
+- The service worker must **never** cache `/api/*` (`frontend/public/sw.js`) — stale scheduler state is worse than none. Shell-only: cache-first for `/assets/`, network-first for navigations.
+- Empty Zustand generic arg trips the eslint empty-type rule — use the v5 curried form: `create<State>()((set) => …)`.
+- Drizzle 0.36.x index API: return a plain object from the table callback, `(t) => ({ idx: index(...) })`, not an array.
+- Traefik's `exposedByDefault=false` means the `web` network and the labels must both be present, or the container simply isn't routed.
+- `@inquirer/prompts` needs a TTY — anything piping stdin must use the `scripts/test-*` helpers instead.
+- **`backend/.env` must exist before any `docker compose` command**, including `typecheck` and `lint` — the dev compose file declares `env_file`, so compose aborts before your command runs if it's missing. `cp backend/.env.example backend/.env` first. To check types without one: `docker build -q -t promitto-backend-check -f backend/Dockerfile.dev backend && docker run --rm promitto-backend-check sh -c "npm run typecheck && npm run lint"`.

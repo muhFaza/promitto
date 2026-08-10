@@ -89,8 +89,15 @@ openssl rand -base64 48
 
 ### 3. Build and start
 
+`docker-compose.prod.yml` has **no `build:` key** — it references a prebuilt `promitto:deploy` image. The VPS has ~960MB of RAM and Node builds have been OOM-killed on it, so images are always built elsewhere and shipped in.
+
+Normally CI does this for you (see [Automatic deployment](#automatic-deployment)). To do it by hand from a workstation:
+
 ```bash
-docker compose -f docker-compose.prod.yml up -d --build
+# --platform matters if you're on Apple Silicon; the VPS is x86_64
+docker buildx build --platform linux/amd64 -t promitto:deploy --load .
+docker save promitto:deploy | gzip -1 | ssh -i ssh1.pem fazadev@<vps> 'gunzip | docker load'
+ssh -i ssh1.pem fazadev@<vps> 'cd promitto && docker compose -f docker-compose.prod.yml up -d'
 ```
 
 The entrypoint applies any pending migrations, then starts the server. Traefik will pick up the container via labels and request a Let's Encrypt cert on first HTTPS hit.
@@ -144,11 +151,9 @@ Everything that matters lives in `backend/data/`: the SQLite DB and every user's
 ./deploy/backup.sh /path/to/my/snapshots        # custom destination
 ```
 
-Schedule via cron:
+**There is no automatic backup.** No cron, and the deploy workflow does not snapshot before restarting — this is a deliberate choice, not an oversight. `backup.sh` is a manual tool; run it yourself when you want a snapshot.
 
-```cron
-15 3 * * *  cd /home/fazadev/promitto && ./deploy/backup.sh >> /home/fazadev/promitto-backups/backup.log 2>&1
-```
+The consequence to keep in mind: a rollback restores the *image*, never the *schema*. If a migration turns out to be destructive or incompatible, there is nothing to restore from. That is the whole reason migrations must stay backward-compatible with the previous release.
 
 **Restore** onto a fresh VPS:
 
@@ -163,21 +168,35 @@ Losing `backend/data/sessions/{userId}/` means that user has to pair WhatsApp ag
 
 ---
 
-## Upgrade procedure
+## Automatic deployment
 
-The canonical flow:
+Every push to `main` that touches something other than Markdown runs `.github/workflows/deploy.yml`, which:
+
+1. builds the image on the runner (native `linux/amd64` — the VPS never builds),
+2. rotates the current `promitto:deploy` to `promitto:previous` as a rollback target,
+3. streams the new image over SSH (`docker save | gzip | docker load`),
+4. copies `docker-compose.prod.yml` across — deliberately *not* a VPS-side `git pull`, which has silently served a stale ref on this box before,
+5. runs `docker compose up -d`,
+6. polls `/api/health` for up to 150s, and **rolls back to `promitto:previous` if it never goes green**.
+
+It does **not** take a backup first. See [Backup & restore](#backup--restore).
+
+`workflow_dispatch` is enabled, so you can also deploy the current `main` by hand from the Actions tab.
+
+Required repo secrets: `VPS_SSH_KEY` (private key with access to `fazadev@<vps>`) and `VPS_KNOWN_HOSTS` (pinned host key, so the deploy never blind-trusts a keyscan).
+
+**Each deploy restarts the container, which drops any live WhatsApp socket.** Sessions restore automatically from `backend/data/sessions/`, but a session that fails to restore needs a QR re-pair from the phone. Batch your merges accordingly.
+
+### Manual rollback
 
 ```bash
-cd /home/fazadev/promitto
-./deploy/backup.sh                                        # snapshot first
-git pull
-docker compose -f docker-compose.prod.yml up -d --build   # rebuild + restart
-docker compose -f docker-compose.prod.yml logs -f promitto | head
+ssh -i ssh1.pem fazadev@<vps> 'cd promitto \
+  && docker tag promitto:previous promitto:deploy \
+  && docker compose -f docker-compose.prod.yml up -d'
 ```
 
-The entrypoint runs `db:migrate` before the server starts, so pending migrations apply automatically. Migrations must always be backward-safe with the previous code in case of a quick rollback.
+The entrypoint runs `db:migrate` before the server starts, so pending migrations apply automatically. Migrations must always be backward-safe with the previous code — rolling the image back does **not** roll the schema back, and with no backups there is nothing to restore from. An incompatible migration is unrecoverable, so review schema changes accordingly.
 
-To roll back, check out the previous tag/commit, then `docker compose -f docker-compose.prod.yml up -d --build`. If a migration was incompatible, restore `backend/data/` from the latest backup.
 
 ---
 

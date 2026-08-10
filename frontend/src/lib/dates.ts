@@ -24,3 +24,8 @@ export function nowInZoneForInput(zone: string, offsetMinutes = 5): string {
     .plus({ minutes: offsetMinutes })
     .toFormat("yyyy-LL-dd'T'HH:mm");
 }
+
+/** Convert epoch ms to the "YYYY-MM-DDTHH:mm" format used by `datetime-local` inputs. */
+export function epochToLocalInput(epochMs: number, zone: string): string {
+  return DateTime.fromMillis(epochMs).setZone(zone).toFormat("yyyy-LL-dd'T'HH:mm");
+}
