@@ -15,6 +15,14 @@ class SchedulerPoller {
   start(): void {
     if (this.interval) return;
     this.stopped = false;
+
+    // Any lease left over from a previous run is orphaned — reclaim it before
+    // the first tick, or those rows stay invisible to pickDue() forever.
+    const released = service.releaseStaleLeases();
+    if (released > 0) {
+      logger.warn({ released }, 'released orphaned scheduler leases');
+    }
+
     this.interval = setInterval(() => {
       void this.tick();
     }, TICK_MS);

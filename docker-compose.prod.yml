@@ -1,10 +1,13 @@
 services:
   promitto:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    # Prebuilt and shipped by .github/workflows/deploy.yml — deliberately no
+    # `build:` key, so the 1GB VPS can never be talked into building here.
+    image: promitto:deploy
     container_name: promitto
     restart: unless-stopped
+    # Node + Baileys sockets; the box has ~960MB total and every other service
+    # is capped too. Raise this before adding paired numbers, not after an OOM.
+    mem_limit: 384m
     environment:
       NODE_ENV: production
       PORT: 3000

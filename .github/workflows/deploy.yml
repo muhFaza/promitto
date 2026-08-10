@@ -1,0 +1,125 @@
+name: Deploy to VPS
+
+# Builds the production image on the runner (native linux/amd64) and ships it to
+# the VPS over SSH. The VPS never builds — it has ~960MB of RAM and Node builds
+# have been OOM-killed there before.
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'LICENSE'
+  workflow_dispatch:
+
+# Never let two deploys interleave: they'd fight over the same image tag and the
+# same container. Queue instead of cancelling — a half-finished deploy is worse
+# than a slow one.
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+env:
+  VPS_HOST: 202.74.75.193
+  VPS_USER: fazadev
+  REMOTE_DIR: /home/fazadev/promitto
+  HEALTH_URL: https://wa.muhfaza.my.id/api/health
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify required secrets are present
+        env:
+          KEY: ${{ secrets.VPS_SSH_KEY }}
+          HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
+        run: |
+          test -n "$KEY"   || { echo "::error::VPS_SSH_KEY is not set"; exit 1; }
+          test -n "$HOSTS" || { echo "::error::VPS_KNOWN_HOSTS is not set"; exit 1; }
+
+      - name: Build production image
+        run: docker build -t promitto:deploy .
+
+      - name: Configure SSH
+        env:
+          KEY: ${{ secrets.VPS_SSH_KEY }}
+          HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          # Pinned host key — no ssh-keyscan, so a MITM can't harvest the key.
+          printf '%s\n' "$HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+          cat >> ~/.ssh/config <<'EOF'
+          Host vps
+            User ${{ env.VPS_USER }}
+            HostName ${{ env.VPS_HOST }}
+            IdentityFile ~/.ssh/deploy_key
+            IdentitiesOnly yes
+            StrictHostKeyChecking yes
+            ConnectTimeout 20
+            ServerAliveInterval 30
+          EOF
+          chmod 600 ~/.ssh/config
+
+      - name: Rotate previous image on VPS
+        # Keep exactly one generation back as a rollback target. Named tags only —
+        # no global prune, so other projects on this shared box are untouched.
+        run: |
+          ssh vps 'set -e
+            docker image inspect promitto:previous >/dev/null 2>&1 && docker rmi -f promitto:previous || true
+            docker image inspect promitto:deploy   >/dev/null 2>&1 && docker tag promitto:deploy promitto:previous || true'
+
+      - name: Ship image
+        run: docker save promitto:deploy | gzip -1 | ssh vps 'gunzip | docker load'
+
+      - name: Sync compose file
+        # scp rather than a VPS-side `git pull`: this box's fetch has silently
+        # failed before and rolled a deployment back to a stale commit.
+        # Only the compose file needs to travel — entrypoint.sh is baked into
+        # the image by the Dockerfile, so the copy under ~/promitto/deploy is
+        # not on the runtime path.
+        run: scp docker-compose.prod.yml "vps:$REMOTE_DIR/docker-compose.prod.yml"
+
+      - name: Restart with new image
+        id: restart
+        run: |
+          ssh vps 'set -e
+            cd '"$REMOTE_DIR"'
+            docker compose -f docker-compose.prod.yml up -d
+            docker compose -f docker-compose.prod.yml ps'
+
+      - name: Health check
+        run: |
+          for i in $(seq 1 30); do
+            body="$(curl -fsS --max-time 10 "$HEALTH_URL" 2>/dev/null || true)"
+            case "$body" in
+              *'"status":"ok"'*) echo "healthy after ${i} attempt(s): $body"; exit 0 ;;
+            esac
+            echo "attempt ${i}: not healthy yet"
+            sleep 5
+          done
+          echo "::error::health check never returned ok"
+          ssh vps 'docker compose -f '"$REMOTE_DIR"'/docker-compose.prod.yml logs --tail 80 promitto' || true
+          exit 1
+
+      - name: Roll back on failure
+        # Only if the restart step actually ran. A failure before that (build,
+        # ssh setup, image transfer) leaves production untouched — rolling back
+        # then would *downgrade* a container that is perfectly healthy.
+        # Steps after a failure are skipped, so `!= 'skipped'` is the discriminator.
+        if: failure() && steps.restart.outcome != 'skipped'
+        run: |
+          ssh vps 'set -e
+            if docker image inspect promitto:previous >/dev/null 2>&1; then
+              cd '"$REMOTE_DIR"'
+              docker tag promitto:previous promitto:deploy
+              docker compose -f docker-compose.prod.yml up -d
+              echo "rolled back to promitto:previous"
+            else
+              echo "no previous image to roll back to"
+            fi' || true
