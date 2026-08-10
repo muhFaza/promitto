@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { and, asc, desc, eq, inArray, isNull, lte } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, isNotNull, isNull, lte } from 'drizzle-orm';
 import { db, sqlite } from '../../db/client.js';
 import {
   scheduledMessages,
@@ -212,6 +212,26 @@ export function pickDue(limit: number): ScheduledMessage[] {
     rollback.run();
     throw err;
   }
+}
+
+/**
+ * Boot-time lease recovery. `picked_at` is the poller's claim on a row; if the
+ * process dies between pickDue() and the matching recordAttempt*(), the stamp
+ * outlives the run and the row is never picked again. We are single-instance by
+ * design, so any lease still present at startup is orphaned by definition.
+ */
+export function releaseStaleLeases(): number {
+  const res = db
+    .update(scheduledMessages)
+    .set({ pickedAt: null })
+    .where(
+      and(
+        eq(scheduledMessages.isActive, true),
+        isNotNull(scheduledMessages.pickedAt),
+      ),
+    )
+    .run();
+  return res.changes;
 }
 
 export function recordAttemptSuccess(row: ScheduledMessage): void {
