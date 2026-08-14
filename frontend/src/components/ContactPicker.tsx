@@ -9,6 +9,20 @@ type Props = {
   placeholder?: string;
 };
 
+// Empty search box: offer the recent/pinned list rather than a blind
+// alphabetical slice. Falls back to the alphabetical list when the user has
+// no interaction history yet (and when /recent is unavailable).
+async function fetchOptions(search: string): Promise<Contact[]> {
+  if (search) {
+    const r = await contactsApi.list({ search, limit: 20 });
+    return r.contacts;
+  }
+  const recent = await contactsApi.recent(20).catch(() => null);
+  if (recent && recent.contacts.length > 0) return recent.contacts;
+  const r = await contactsApi.list({ limit: 20 });
+  return r.contacts;
+}
+
 export function ContactPicker({
   value,
   onChange,
@@ -46,9 +60,8 @@ export function ContactPicker({
     if (debounceRef.current) clearTimeout(debounceRef.current);
     debounceRef.current = setTimeout(() => {
       setLoading(true);
-      contactsApi
-        .list(v ? { search: v, limit: 20 } : { limit: 20 })
-        .then((r) => setOptions(r.contacts))
+      fetchOptions(v)
+        .then((contacts) => setOptions(contacts))
         .catch(() => setOptions([]))
         .finally(() => setLoading(false));
     }, 200);
@@ -130,7 +143,17 @@ export function ContactPicker({
               className="block w-full border-b border-rule/60 px-3 py-2 text-left text-sm transition-colors last:border-b-0 hover:bg-paper-deep"
               onClick={() => selectContact(c)}
             >
-              <div className="font-medium text-ink">{c.displayName}</div>
+              <div className="font-medium text-ink">
+                {c.pinnedAt !== null && (
+                  <>
+                    <span aria-hidden="true" className="mr-1.5 text-accent">
+                      ▪
+                    </span>
+                    <span className="sr-only">Pinned:</span>
+                  </>
+                )}
+                {c.displayName}
+              </div>
               <div className="font-mono text-[11px] text-ink-muted">{c.phone}</div>
             </button>
           ))}

@@ -8,10 +8,12 @@ import { Field } from '../components/ui/Field';
 import { Input } from '../components/ui/Input';
 import { Spinner } from '../components/ui/Spinner';
 import type { Contact } from '../lib/types';
+import { useContactsStore } from '../stores/contacts';
 import { useUiStore } from '../stores/ui';
 
 export function Contacts() {
   const pushToast = useUiStore((s) => s.pushToast);
+  const togglePin = useContactsStore((s) => s.togglePin);
   const [rows, setRows] = useState<Contact[]>([]);
   const [search, setSearch] = useState('');
   const [loading, setLoading] = useState(true);
@@ -22,6 +24,7 @@ export function Contacts() {
 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState('');
+  const [pinBusyId, setPinBusyId] = useState<string | null>(null);
 
   const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -100,6 +103,27 @@ export function Contacts() {
         message: err instanceof ApiError ? err.message : 'Rename failed',
         level: 'error',
       });
+    }
+  }
+
+  async function handleTogglePin(c: Contact) {
+    setPinBusyId(c.id);
+    try {
+      await togglePin(c);
+      // Server orders pinned first, so the row jumps blocks after the refetch.
+      await refresh(search);
+    } catch (err) {
+      pushToast({
+        message:
+          err instanceof ApiError
+            ? err.message
+            : c.pinnedAt === null
+              ? 'Pin failed'
+              : 'Unpin failed',
+        level: 'error',
+      });
+    } finally {
+      setPinBusyId(null);
     }
   }
 
@@ -242,7 +266,20 @@ export function Contacts() {
                             </Button>
                           </div>
                         ) : (
-                          c.displayName
+                          <>
+                            {c.pinnedAt !== null && (
+                              <>
+                                <span
+                                  aria-hidden="true"
+                                  className="mr-1.5 text-accent"
+                                >
+                                  ▪
+                                </span>
+                                <span className="sr-only">Pinned:</span>
+                              </>
+                            )}
+                            {c.displayName}
+                          </>
                         )}
                       </td>
                       <td className="px-4 py-4 align-top font-mono text-[12px] text-ink-soft">
@@ -265,15 +302,29 @@ export function Contacts() {
                       <td className="px-4 py-4 text-right align-top">
                         <div className="flex justify-end gap-2">
                           {editingId !== c.id && (
-                            <Button
-                              variant="ghost"
-                              onClick={() => {
-                                setEditingId(c.id);
-                                setEditName(c.displayName);
-                              }}
-                            >
-                              Rename
-                            </Button>
+                            <>
+                              <Button
+                                variant="ghost"
+                                disabled={pinBusyId === c.id}
+                                onClick={() => void handleTogglePin(c)}
+                                aria-label={
+                                  c.pinnedAt === null
+                                    ? `Pin ${c.displayName}`
+                                    : `Unpin ${c.displayName}`
+                                }
+                              >
+                                {c.pinnedAt === null ? 'Pin' : 'Unpin'}
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                onClick={() => {
+                                  setEditingId(c.id);
+                                  setEditName(c.displayName);
+                                }}
+                              >
+                                Rename
+                              </Button>
+                            </>
                           )}
                           <Button
                             variant="ghost"

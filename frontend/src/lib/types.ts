@@ -16,6 +16,8 @@ export type Contact = {
   phone: string;
   source: 'synced' | 'manual';
   verifiedOnWhatsapp: boolean | null;
+  pinnedAt: number | null;
+  lastInteractionAt: number | null;
   createdAt: number;
   updatedAt: number;
 };
