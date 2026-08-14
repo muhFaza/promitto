@@ -81,6 +81,20 @@ const baileysLogger = pino({
 
 type PendingContact = { jid: string; displayName: string; phone: string };
 
+// Baileys hands timestamps over as seconds, typed `number | Long | null`. Long
+// is matched structurally rather than imported — it is a transitive dep, not
+// part of baileys' own export surface.
+type WaTimestamp = number | { toString(): string } | null | undefined;
+
+// The shape shared by `Chat`, `ChatUpdate` and the chats carried on
+// `messaging-history.set`; only the recency fields are of interest.
+type ChatLike = {
+  id?: string | null;
+  conversationTimestamp?: WaTimestamp;
+  lastMessageRecvTimestamp?: WaTimestamp;
+  timestamp?: WaTimestamp;
+};
+
 type Handle = {
   userId: string;
   sock: WASocket | null;
@@ -118,6 +132,11 @@ type Handle = {
   openPromise: Promise<void> | null;
   syncDebounceTimer: NodeJS.Timeout | null;
   pendingContacts: Map<string, PendingContact>;
+  // jid → newest interaction seen, epoch ms. Nothing else from the WA payloads
+  // is retained: message bodies and chat objects are read and dropped in the
+  // same tick.
+  pendingInteractions: Map<string, number>;
+  interactionDebounceTimer: NodeJS.Timeout | null;
   intentionalClose: boolean;
 };
 
@@ -187,6 +206,8 @@ class SessionManager {
       openPromise: null,
       syncDebounceTimer: null,
       pendingContacts: new Map(),
+      pendingInteractions: new Map(),
+      interactionDebounceTimer: null,
       intentionalClose: false,
     };
     h.events.setMaxListeners(32);
@@ -415,6 +436,81 @@ class SessionManager {
     sock.ev.on('contacts.update', (cs) => {
       this.handleContactsSync(h.userId, cs);
     });
+
+    // Recency signals. Chat events only arrive on a (re-)pair's history
+    // replay; messages.upsert is what actually accrues on a session that is
+    // already paired — and it fires for fromMe too, so the scheduler's own
+    // sends count as interaction.
+    sock.ev.on('messaging-history.set', ({ chats }) => {
+      this.handleChatRecency(h, chats);
+    });
+
+    sock.ev.on('chats.upsert', (cs) => {
+      this.handleChatRecency(h, cs);
+    });
+
+    sock.ev.on('chats.update', (cs) => {
+      this.handleChatRecency(h, cs);
+    });
+
+    sock.ev.on('messages.upsert', ({ messages }) => {
+      for (const m of messages) {
+        const jid = m.key?.remoteJid;
+        const ms = waTsToMs(m.messageTimestamp);
+        if (jid && ms) this.recordInteraction(h, jid, ms);
+      }
+    });
+  }
+
+  private handleChatRecency(h: Handle, cs: ReadonlyArray<ChatLike>): void {
+    for (const c of cs) {
+      if (!c.id) continue;
+      const ms =
+        waTsToMs(c.conversationTimestamp) ??
+        waTsToMs(c.lastMessageRecvTimestamp) ??
+        waTsToMs(c.timestamp);
+      if (ms) this.recordInteraction(h, c.id, ms);
+    }
+  }
+
+  // Same buffering deal as handleContactsSync: a quiet window, plus a hard cap
+  // so a history replay that never pauses for 2s can't starve the flush.
+  private recordInteraction(h: Handle, jid: string, ms: number): void {
+    if (!isUserJid(jid)) return;
+
+    const existing = h.pendingInteractions.get(jid);
+    if (existing !== undefined && existing >= ms) return;
+    h.pendingInteractions.set(jid, ms);
+
+    if (h.pendingInteractions.size >= CONTACT_SYNC_MAX_BUFFER) {
+      this.flushPendingInteractions(h);
+      return;
+    }
+
+    if (h.interactionDebounceTimer) clearTimeout(h.interactionDebounceTimer);
+    h.interactionDebounceTimer = setTimeout(() => {
+      this.flushPendingInteractions(h);
+    }, CONTACT_SYNC_DEBOUNCE_MS);
+  }
+
+  private flushPendingInteractions(h: Handle): void {
+    if (h.interactionDebounceTimer) {
+      clearTimeout(h.interactionDebounceTimer);
+      h.interactionDebounceTimer = null;
+    }
+    if (h.pendingInteractions.size === 0) return;
+
+    const batch = new Map(h.pendingInteractions);
+    h.pendingInteractions.clear();
+
+    try {
+      contactsService.recordInteractions(h.userId, batch);
+    } catch (err) {
+      logger.warn(
+        { err, userId: h.userId, count: batch.size },
+        'recordInteractions flush failed',
+      );
+    }
   }
 
   // Baileys emits contacts.upsert/update opportunistically with no "sync done"
@@ -766,6 +862,7 @@ class SessionManager {
         h.reconnectTimer = null;
       }
       this.flushPendingContacts(h);
+      this.flushPendingInteractions(h);
 
       if (h.sock) {
         try {
@@ -1051,7 +1148,12 @@ class SessionManager {
         clearTimeout(h.syncDebounceTimer);
         h.syncDebounceTimer = null;
       }
+      if (h.interactionDebounceTimer) {
+        clearTimeout(h.interactionDebounceTimer);
+        h.interactionDebounceTimer = null;
+      }
       this.flushPendingContacts(h);
+      this.flushPendingInteractions(h);
       if (h.sock) {
         try {
           await h.sock.end(undefined);
@@ -1216,6 +1318,16 @@ function reconcileBackoffMs(attempts: number): number {
     RECONCILE_BASE_BACKOFF_MS * 2 ** Math.max(0, attempts - 1),
   );
   return base + Math.floor(Math.random() * base * 0.2);
+}
+
+// WA timestamps are seconds; anything already past 1e12 is milliseconds and is
+// passed through, which keeps a future protocol change from inflating a date
+// into the year 33000.
+function waTsToMs(ts: WaTimestamp): number | null {
+  if (ts == null) return null;
+  const n = typeof ts === 'number' ? ts : Number(ts.toString());
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return n < 1e12 ? Math.round(n * 1000) : Math.round(n);
 }
 
 function toMessage(err: unknown): string {

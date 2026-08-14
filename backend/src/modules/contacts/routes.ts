@@ -33,6 +33,21 @@ contactsRouter.get('/', (req, res, next) => {
   }
 });
 
+const RecentQuery = z.object({
+  limit: z.coerce.number().int().min(1).max(50).optional(),
+});
+
+contactsRouter.get('/recent', (req, res, next) => {
+  try {
+    if (!req.user) throw errors.unauthorized();
+    const query = RecentQuery.parse(req.query);
+    const rows = service.listRecent(req.user.id, query.limit);
+    res.json({ contacts: rows.map(serializeContact) });
+  } catch (err) {
+    next(err);
+  }
+});
+
 const CreateBody = z.object({
   phone: z.string().min(3).max(40),
   displayName: z.string().min(1).max(120),
@@ -73,9 +88,14 @@ contactsRouter.post('/', async (req, res, next) => {
   }
 });
 
-const UpdateBody = z.object({
-  displayName: z.string().min(1).max(120),
-});
+const UpdateBody = z
+  .object({
+    displayName: z.string().min(1).max(120).optional(),
+    pinned: z.boolean().optional(),
+  })
+  .refine((b) => b.displayName !== undefined || b.pinned !== undefined, {
+    message: 'Provide displayName and/or pinned',
+  });
 
 contactsRouter.patch('/:id', (req, res, next) => {
   try {
@@ -84,8 +104,18 @@ contactsRouter.patch('/:id', (req, res, next) => {
     const id = req.params.id;
     const existing = service.findById(req.user.id, id);
     if (!existing) throw errors.notFound('contact');
-    const updated = service.rename(req.user.id, id, body.displayName);
-    if (!updated) throw errors.notFound('contact');
+
+    let updated = existing;
+    if (body.displayName !== undefined) {
+      const renamed = service.rename(req.user.id, id, body.displayName);
+      if (!renamed) throw errors.notFound('contact');
+      updated = renamed;
+    }
+    if (body.pinned !== undefined) {
+      const pinned = service.setPinned(req.user.id, id, body.pinned);
+      if (!pinned) throw errors.notFound('contact');
+      updated = pinned;
+    }
     res.json(serializeContact(updated));
   } catch (err) {
     next(err);
