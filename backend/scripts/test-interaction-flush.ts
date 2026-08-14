@@ -32,6 +32,11 @@ const HOUR = 60 * MINUTE;
 const DAY = 24 * HOUR;
 
 const userId = randomUUID();
+// A second tenant exists purely so the scheduling-fallback subquery inside
+// listRecent is tested with something to leak: it schedules to a jid that is
+// already a contact of user 1, so dropping the userId filter there would light
+// up a contact that must stay dark.
+const otherUserId = randomUUID();
 
 type Seed = { id: string; name: string; jid: string; phone: string };
 
@@ -67,17 +72,22 @@ function pass(label: string): void {
 }
 
 function seed(): void {
-  db.insert(users)
-    .values({
-      id: userId,
-      email: `interaction-flush-${process.pid}@example.test`,
-      passwordHash: 'not-a-real-hash',
-      role: 'user',
-      timezone: 'Asia/Jakarta',
-      createdAt: new Date(NOW),
-      updatedAt: new Date(NOW),
-    })
-    .run();
+  for (const [id, tag] of [
+    [userId, 'interaction-flush'],
+    [otherUserId, 'interaction-flush-other'],
+  ] as const) {
+    db.insert(users)
+      .values({
+        id,
+        email: `${tag}-${process.pid}@example.test`,
+        passwordHash: 'not-a-real-hash',
+        role: 'user',
+        timezone: 'Asia/Jakarta',
+        createdAt: new Date(NOW),
+        updatedAt: new Date(NOW),
+      })
+      .run();
+  }
 
   for (const c of [alpha, bravo, charlie, delta]) {
     db.insert(contacts)
@@ -119,6 +129,26 @@ function seed(): void {
       })
       .run();
   }
+
+  // Cross-tenant bait: user 2 schedules to Charlie's jid one minute ago. Charlie
+  // is user 1's contact and must stay excluded from user 1's recents; if the
+  // subquery's userId filter were dropped, this would surface Charlie near the
+  // top and assertions (c)/(g) would fail.
+  db.insert(scheduledMessages)
+    .values({
+      id: randomUUID(),
+      userId: otherUserId,
+      recipientJid: charlie.jid,
+      recipientNameSnapshot: charlie.name,
+      messageText: 'other tenant',
+      scheduleType: 'once',
+      timezone: 'Asia/Jakarta',
+      nextRunAt: new Date(NOW + DAY),
+      isActive: true,
+      createdAt: new Date(NOW - MINUTE),
+      updatedAt: new Date(NOW - MINUTE),
+    })
+    .run();
 }
 
 function interactionAt(id: string): number | null {
@@ -210,6 +240,29 @@ async function run(): Promise<void> {
     'repeat pin must not restamp pinned_at',
   );
   pass('(f) repeat pin keeps the original pinnedAt');
+
+  // (g) Tenancy: user 2's schedule to Charlie's jid must not rank Charlie for
+  //     user 1, and must not perturb user 1's ordering at all.
+  const afterCrossTenant = contactsService
+    .listRecent(userId, 8)
+    .map((c) => c.displayName);
+  assert.ok(
+    !afterCrossTenant.includes('Charlie'),
+    `another user's schedule must not surface Charlie — got ${JSON.stringify(afterCrossTenant)}`,
+  );
+  // Alpha advanced to NOW - MINUTE in (e); order is otherwise unchanged.
+  assert.deepEqual(
+    afterCrossTenant,
+    order,
+    `cross-tenant schedule must not reorder user 1's recents — got ${JSON.stringify(afterCrossTenant)}`,
+  );
+  // And the other tenant, who has no contacts of their own, gets nothing.
+  assert.deepEqual(
+    contactsService.listRecent(otherUserId, 8),
+    [],
+    'the other tenant has no contacts and must get an empty list',
+  );
+  pass('(g) scheduling fallback is scoped per user');
 }
 
 let failure: unknown = null;
@@ -226,9 +279,9 @@ try {
 
 if (failure) {
   console.error(failure instanceof Error ? failure.message : failure);
-  console.error(`FAIL after ${passed}/6 assertions`);
+  console.error(`FAIL after ${passed}/7 assertions`);
   process.exit(1);
 }
 
-console.log(`OK ${passed}/6 assertions passed`);
+console.log(`OK ${passed}/7 assertions passed`);
 process.exit(0);

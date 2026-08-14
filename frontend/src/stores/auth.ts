@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import * as authApi from '../api/auth';
 import type { UserPublic } from '../lib/types';
+import { useContactsStore } from './contacts';
 import { useWaStore } from './wa';
 
 type Status = 'idle' | 'loading' | 'authenticated' | 'unauthorized';
@@ -38,6 +39,7 @@ export const useAuthStore = create<AuthState>()((set) => ({
       await authApi.logout();
     } finally {
       useWaStore.getState().reset();
+      useContactsStore.getState().reset();
       set({ user: null, status: 'unauthorized' });
     }
   },

@@ -5,7 +5,9 @@ import { useContactsStore } from '../stores/contacts';
 
 type Props = {
   selectedJid: string | null;
-  onSelect: (c: Contact) => void;
+  // Null on a second click of the selected chip — aria-pressed advertises a
+  // toggle, so it has to actually toggle.
+  onSelect: (c: Contact | null) => void;
 };
 
 export function ContactQuickPick({ selectedJid, onSelect }: Props) {
@@ -30,7 +32,7 @@ export function ContactQuickPick({ selectedJid, onSelect }: Props) {
             <li key={c.id}>
               <button
                 type="button"
-                onClick={() => onSelect(c)}
+                onClick={() => onSelect(selected ? null : c)}
                 aria-pressed={selected}
                 className={cn(
                   'inline-flex max-w-[14rem] items-center gap-1.5 rounded-sm border bg-paper-raised px-3 py-1.5 text-sm text-ink transition-colors hover:bg-paper-deep',

@@ -33,6 +33,9 @@ export function ContactPicker({
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // The empty-search branch chains up to two requests (recent → list fallback),
+  // so a stale response can outlive a newer one. Only the latest query wins.
+  const seqRef = useRef(0);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const listId = useId();
@@ -59,11 +62,18 @@ export function ContactPicker({
   function query(v: string) {
     if (debounceRef.current) clearTimeout(debounceRef.current);
     debounceRef.current = setTimeout(() => {
+      const seq = ++seqRef.current;
       setLoading(true);
       fetchOptions(v)
-        .then((contacts) => setOptions(contacts))
-        .catch(() => setOptions([]))
-        .finally(() => setLoading(false));
+        .then((contacts) => {
+          if (seq === seqRef.current) setOptions(contacts);
+        })
+        .catch(() => {
+          if (seq === seqRef.current) setOptions([]);
+        })
+        .finally(() => {
+          if (seq === seqRef.current) setLoading(false);
+        });
     }, 200);
   }
 

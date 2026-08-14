@@ -102,20 +102,8 @@ contactsRouter.patch('/:id', (req, res, next) => {
     if (!req.user) throw errors.unauthorized();
     const body = UpdateBody.parse(req.body);
     const id = req.params.id;
-    const existing = service.findById(req.user.id, id);
-    if (!existing) throw errors.notFound('contact');
-
-    let updated = existing;
-    if (body.displayName !== undefined) {
-      const renamed = service.rename(req.user.id, id, body.displayName);
-      if (!renamed) throw errors.notFound('contact');
-      updated = renamed;
-    }
-    if (body.pinned !== undefined) {
-      const pinned = service.setPinned(req.user.id, id, body.pinned);
-      if (!pinned) throw errors.notFound('contact');
-      updated = pinned;
-    }
+    const updated = service.applyPatch(req.user.id, id, body);
+    if (!updated) throw errors.notFound('contact');
     res.json(serializeContact(updated));
   } catch (err) {
     next(err);

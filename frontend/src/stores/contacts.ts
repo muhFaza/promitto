@@ -9,6 +9,7 @@ type ContactsState = {
   loaded: boolean;
   load: () => Promise<void>;
   togglePin: (c: Contact) => Promise<void>;
+  reset: () => void;
 };
 
 // Shared so pinning on /app/contacts reorders the Dashboard quick-pick row
@@ -32,5 +33,11 @@ export const useContactsStore = create<ContactsState>()((set, get) => ({
     // ApiError propagates: the caller owns the error surface.
     await contactsApi.setPinned(c.id, c.pinnedAt === null);
     await get().load();
+  },
+
+  // `loaded` latches, and logout is an SPA transition with no reload anywhere —
+  // without this the next user in the same tab sees the previous one's contacts.
+  reset() {
+    set({ recent: [], loaded: false });
   },
 }));

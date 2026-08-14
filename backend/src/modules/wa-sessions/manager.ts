@@ -442,7 +442,8 @@ class SessionManager {
     // already paired — and it fires for fromMe too, so the scheduler's own
     // sends count as interaction.
     sock.ev.on('messaging-history.set', ({ chats }) => {
-      this.handleChatRecency(h, chats);
+      // A payload without `chats` must not throw inside an event handler.
+      this.handleChatRecency(h, chats ?? []);
     });
 
     sock.ev.on('chats.upsert', (cs) => {

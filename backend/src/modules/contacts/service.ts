@@ -217,6 +217,30 @@ export function setPinned(userId: string, id: string, pinned: boolean): Contact 
   return findById(userId, id);
 }
 
+// A PATCH carrying both keys must not half-apply: as two independent statements
+// a failure between them leaves a renamed-but-unpinned row behind a 500.
+export function applyPatch(
+  userId: string,
+  id: string,
+  patch: { displayName?: string; pinned?: boolean },
+): Contact | null {
+  return sqlite
+    .transaction((): Contact | null => {
+      let row = findById(userId, id);
+      if (!row) return null;
+      if (patch.displayName !== undefined) {
+        row = rename(userId, id, patch.displayName);
+        if (!row) return null;
+      }
+      if (patch.pinned !== undefined) {
+        row = setPinned(userId, id, patch.pinned);
+        if (!row) return null;
+      }
+      return row;
+    })
+    .immediate();
+}
+
 // Fed by the WA session manager's debounced interaction buffer. UPDATE-only by
 // design: chats arrive from numbers that were never saved as contacts and carry
 // no usable display name, so contact creation stays with contacts.upsert. The
@@ -226,14 +250,16 @@ export function recordInteractions(
   interactions: ReadonlyMap<string, number>,
 ): void {
   if (interactions.size === 0) return;
-  const now = new Date();
 
   sqlite
     .transaction(() => {
       for (const [jid, ms] of interactions) {
         const at = new Date(ms);
+        // Deliberately does NOT touch updated_at — that column means "last user
+        // edit", and bumping it here would silently redefine it as "last WA
+        // message" for every contact the user talks to.
         db.update(contacts)
-          .set({ lastInteractionAt: at, updatedAt: now })
+          .set({ lastInteractionAt: at })
           .where(
             and(
               eq(contacts.userId, userId),
