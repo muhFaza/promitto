@@ -53,7 +53,7 @@ Routers and their gating (`A` = `requireAuth`, `P` = `requirePasswordRotated`, `
 | `/api/auth` | none (`/me` uses `A`) | `login`, `logout`, `me` — both POSTs are deliberately CSRF-exempt |
 | `/api/users` | `A` + `P` + `C` + `requireSuperuser` | list/create/disable/enable/reset-password/delete |
 | `/api/wa` | `A` + `P` + `C` | `connect`, `disconnect`, `logout`, `status`, `events` (SSE) |
-| `/api/contacts` | `A` + `P` + `C` | list (search, limit capped 200), create, rename, delete |
+| `/api/contacts` | `A` + `P` + `C` | list (search, limit capped 200), `recent` (pinned + interaction recency, limit capped 50), create, rename/pin (one PATCH, ≥1 key), delete |
 | `/api/scheduler` | `A` + `P` + `C` | create, list (`?status=upcoming\|recurring\|history\|failed`), `stats`, `preview`, patch, cancel |
 | `/api/settings` | `A` + `C`, `P` per-route | password, timezone, timezone list (`GET /timezones` un-gated by `P` on purpose) |
 
@@ -70,6 +70,8 @@ Every module follows `routes.ts` (zod parsing + HTTP) → `service.ts` (Drizzle,
 `users` → `sessions`, `wa_connections` (PK is `user_id`, so one WA number per user by construction), `contacts` (unique on `user_id + jid`), `scheduled_messages`, `sent_messages`. All child tables cascade on user delete. Migrations are Drizzle SQL files in `backend/drizzle/`; the prod entrypoint applies them before the server boots, so **every migration must be backward-compatible with the previous release** in case of rollback.
 
 `sent_messages` is an append-only attempt log, one row per send attempt (success *and* failure) — it is not a mirror of `scheduled_messages`. "History" and "Failed" in the UI are both reads of this table.
+
+`contacts.pinned_at` / `contacts.last_interaction_at` are both nullable. `listRecent()` orders pinned first (`pinned_at ASC` — repeat pin deliberately keeps the original timestamp so the order is stable), then `COALESCE(last_interaction_at, newest scheduled_messages.created_at per recipient) DESC`; unpinned rows with neither signal are excluded. `recordInteractions()` is UPDATE-only and monotonic — it never creates contacts and never regresses a newer timestamp.
 
 ### Frontend
 
@@ -109,6 +111,7 @@ Read `modules/scheduler/{poller,service}.ts` together before touching either.
   - `connecting` rows keep their `lastError` on purpose. Blanking it destroyed the only record of why the socket dropped.
   - Restore and the supervisor both check `creds.json` exists first (ENOENT only — a transient EACCES/EIO must not de-register a session), so a credential-less row can't spend a pairing attempt emitting a QR nobody scans.
 - Contact sync is **opportunistic and stateless**: `contacts.upsert`/`contacts.update` fire post-pair and each is upserted immediately. There is no "sync complete" event and no done-detection — don't build UI that waits for one.
+- Interaction recency is captured the same way: `messaging-history.set` / `chats.upsert` / `chats.update` / `messages.upsert` feed a per-user `(jid, epoch-ms)` buffer (same debounce + hard cap as contact sync) flushed via UPDATE-only `recordInteractions()`. Handlers are synchronous extraction only — never retain chat/message objects (heap is capped at 195 MB). Baileys timestamps arrive in **seconds** as `number|Long|null`; `waTsToMs()` normalizes. WhatsApp replays chat history only at pair time, so on an already-paired session this data accrues from live traffic — the scheduling-history fallback in `listRecent()` covers the gap.
 - Only `^[0-9]+@s\.whatsapp\.net$` passes `isUserJid()`; groups (`@g.us`) are rejected at the router. Phone input is normalized by `libphonenumber-js` with **`ID` as the default region** (`0812…` and `62812…` both → `+62812…`).
 - The `jid` stored on `wa_connections` is `normalizeOwnJid()`'d to a bare `+62…` phone string, not a real JID. Contact/recipient JIDs are the real thing.
 - `BAILEYS_LOG_LEVEL` (default `silent`) surfaces Baileys' socket lifecycle in prod without a rebuild.
