@@ -4,6 +4,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { env } from './config/env.js';
 import { sqlite } from './db/client.js';
+import { memorySnapshot } from './lib/memory-monitor.js';
 import { errorMiddleware } from './middleware/error.js';
 import { requestLogger } from './middleware/logger.js';
 import { authRouter } from './modules/auth/routes.js';
@@ -62,6 +63,16 @@ export function createApp(): Express {
       wa = undefined;
     }
 
+    // Point-in-time heap, so pressure can be read without shelling into the box
+    // and grepping the 5-minute telemetry line. Deliberately compact — the
+    // trend lives in the logs; this is the "how is it right now" answer.
+    let mem: { rssMb: number; heapUsedMb: number; heapUsedPct: number } | undefined;
+    try {
+      mem = memorySnapshot();
+    } catch {
+      mem = undefined;
+    }
+
     res.json({
       // `status` is driven by the DB check ALONE, deliberately. Do not fold WA
       // state into it: .github/workflows/deploy.yml greps for "status":"ok" to
@@ -73,6 +84,7 @@ export function createApp(): Express {
       // Kept for backward compatibility with existing probes; same value as wa.connected.
       sessions,
       ...(wa ? { wa } : {}),
+      ...(mem ? { mem } : {}),
     });
   });
 
