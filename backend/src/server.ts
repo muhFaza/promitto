@@ -13,6 +13,7 @@ import { settingsRouter } from './modules/settings/routes.js';
 import { usersRouter } from './modules/users/routes.js';
 import { sessionManager } from './modules/wa-sessions/manager.js';
 import { waRouter } from './modules/wa-sessions/routes.js';
+import { countRestorable } from './modules/wa-sessions/service.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -34,10 +35,44 @@ export function createApp(): Express {
     } catch {
       dbOk = false;
     }
+
+    // `wa.expected` counts rows that *should* have a live socket — literally the
+    // same set restoreAll() and the supervisor act on, via one shared helper so
+    // this number can't drift away from what the app actually attempts. Compare
+    // it against `wa.connected` to spot a container that is up and serving while
+    // every WhatsApp session is dead — which happened for 1h15m unnoticed.
+    // Counted once and reused for both fields: two calls could disagree, and the
+    // in-memory count is taken first so a throw from the DB count below still
+    // leaves `sessions` accurate.
+    let sessions = 0;
+    let wa: { expected: number; connected: number; lastCheckAt: number | null } | undefined;
+    try {
+      sessions = sessionManager.getConnectedCount();
+      const lastCheckAt = sessionManager.getLastReconcileAt();
+      // lastCheckAt proves the supervisor's timer is still alive. An idle tick
+      // logs nothing, so without this a wedged supervisor and a healthy one look
+      // identical from outside — null means it has not completed a tick yet.
+      wa = {
+        expected: countRestorable(),
+        connected: sessions,
+        lastCheckAt: lastCheckAt === 0 ? null : lastCheckAt,
+      };
+    } catch {
+      // Never let health throw: a 500 here trips the deploy gate's rollback.
+      wa = undefined;
+    }
+
     res.json({
+      // `status` is driven by the DB check ALONE, deliberately. Do not fold WA
+      // state into it: .github/workflows/deploy.yml greps for "status":"ok" to
+      // decide whether to roll back, and a fresh container legitimately takes
+      // ~13s to restore its sessions — WA-aware status would roll back every
+      // deploy. Read the `wa` block below for session health instead.
       status: dbOk ? 'ok' : 'degraded',
       db: dbOk ? 'ok' : 'error',
-      sessions: sessionManager.getConnectedCount(),
+      // Kept for backward compatibility with existing probes; same value as wa.connected.
+      sessions,
+      ...(wa ? { wa } : {}),
     });
   });
 

@@ -37,9 +37,23 @@ void (async () => {
     if (restoreTimer) clearTimeout(restoreTimer);
   }
   schedulerPoller.start();
+  // Started after the restore race, not before: the supervisor and restoreAll
+  // both open sockets, and letting them overlap would race the same handle.
+  sessionManager.startSupervisor();
 })();
 
-async function shutdown(signal: string): Promise<void> {
+let shuttingDown = false;
+
+async function shutdown(signal: string, exitCode = 0): Promise<void> {
+  // Idempotent: a second signal, or a fault raised while we are already
+  // unwinding, must not run the teardown twice — sessionManager.shutdown()
+  // closing sockets underneath itself is how you turn a clean exit into a
+  // hung one.
+  if (shuttingDown) {
+    logger.warn({ signal }, 'Shutdown already in progress; ignoring');
+    return;
+  }
+  shuttingDown = true;
   logger.info({ signal }, 'Shutdown signal received');
 
   const work = (async (): Promise<void> => {
@@ -78,15 +92,50 @@ async function shutdown(signal: string): Promise<void> {
       process.exit(1);
     }
     logger.info('Closed cleanly.');
-    process.exit(0);
+    process.exit(exitCode);
   } finally {
     if (shutdownTimer) clearTimeout(shutdownTimer);
   }
 }
 
+function onSignal(signal: string): void {
+  shutdown(signal).catch((err: unknown) => {
+    logger.error({ err, signal }, 'shutdown threw, forcing exit');
+    process.exit(1);
+  });
+}
+
 process.on('SIGTERM', () => {
-  void shutdown('SIGTERM');
+  onSignal('SIGTERM');
 });
 process.on('SIGINT', () => {
-  void shutdown('SIGINT');
+  onSignal('SIGINT');
+});
+
+// Until now there was no handler for either of these, so a stray rejection took
+// the process down with no log line at all — the blind spot that made the
+// every-three-days heap death impossible to attribute. We exit rather than
+// continue on purpose: a process in an unknown state must not keep driving
+// WhatsApp sockets or firing the scheduler. Non-zero, so Docker's
+// unless-stopped policy restarts us, and the graceful path still runs so
+// Baileys closes its sockets cleanly and pending contacts get flushed.
+function onFatal(kind: string, err: unknown): void {
+  logger.fatal({ err, kind }, 'fatal error — shutting down');
+  if (shuttingDown) {
+    // The fault came from inside the teardown. Re-entering it would deadlock
+    // against itself; the exit is the only guaranteed progress left.
+    process.exit(1);
+    return;
+  }
+  shutdown(kind, 1).catch((inner: unknown) => {
+    logger.error({ err: inner, kind }, 'shutdown after fatal error threw');
+    process.exit(1);
+  });
+}
+
+process.on('unhandledRejection', (reason) => {
+  onFatal('unhandledRejection', reason);
+});
+process.on('uncaughtException', (err) => {
+  onFatal('uncaughtException', err);
 });
