@@ -158,7 +158,11 @@ export function Dashboard() {
               )}
             </div>
           </div>
-          {status === 'failed' && lastError && (
+          {/* Not just 'failed': a replaced session (440) and missing credentials
+              both land on 'disconnected' with an actionable message, and compose
+              lives on this page — a bland "Disconnected" while every send fails
+              is the worst version of this. Same condition as the WhatsApp page. */}
+          {lastError && status !== 'connected' && (
             <div className="mt-4 border-l-2 border-accent-warm bg-accent-warm-soft/40 px-4 py-2 text-[12px] text-accent-warm">
               {lastError}
             </div>

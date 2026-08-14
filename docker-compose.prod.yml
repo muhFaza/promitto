@@ -26,6 +26,21 @@ services:
       BAILEYS_LOG_LEVEL: ${BAILEYS_LOG_LEVEL:-silent}
       DEFAULT_TIMEZONE: ${DEFAULT_TIMEZONE:-Asia/Jakarta}
       TRUST_PROXY: "true"
+      # This pins determinism, it does not add headroom. V8 derives its heap cap
+      # from HOST RAM rather than the cgroup, and on this 965MB box it was
+      # already choosing ~259MB — so the old 256 was a hair *below* what it
+      # picked anyway. 192MB leaves ~190MB of the 384m limit for the Node
+      # baseline, new-space, better-sqlite3 and the whatsapp-rust-bridge WASM
+      # linear memory, which is what keeps the process inside the cgroup: an
+      # abort from V8 is survivable, a cgroup SIGKILL is not necessarily.
+      # useMultiFileAuthState writes creds.json with a plain writeFile and no
+      # atomic rename, so a SIGKILL landing mid-write truncates the credentials
+      # of a live pairing. That is the reason to stay under the limit.
+      # The actual fix for the every-few-days heap deaths was removing the
+      # per-creds.update chmod sweep in manager.ts, not this line — don't read
+      # it as "the OOM is handled". Raise this and mem_limit together, never
+      # this alone.
+      NODE_OPTIONS: --max-old-space-size=192
     volumes:
       - ./backend/data:/app/backend/data
     networks:
