@@ -3,6 +3,7 @@ process.umask(0o077);
 
 import { env } from './config/env.js';
 import { logger } from './lib/logger.js';
+import { memoryMonitor } from './lib/memory-monitor.js';
 import { schedulerPoller } from './modules/scheduler/poller.js';
 import { sessionManager } from './modules/wa-sessions/manager.js';
 import { createApp } from './server.js';
@@ -40,6 +41,10 @@ void (async () => {
   // Started after the restore race, not before: the supervisor and restoreAll
   // both open sockets, and letting them overlap would race the same handle.
   sessionManager.startSupervisor();
+  // Last, so the first window measures a settled process rather than the
+  // allocation storm of boot. The session count is passed as a getter to keep
+  // lib/ from importing modules/ — see the note in memory-monitor.ts.
+  memoryMonitor.start(() => sessionManager.getConnectedCount());
 })();
 
 let shuttingDown = false;
@@ -57,6 +62,13 @@ async function shutdown(signal: string, exitCode = 0): Promise<void> {
   logger.info({ signal }, 'Shutdown signal received');
 
   const work = (async (): Promise<void> => {
+    // First: it is pure observability, and a telemetry line emitted midway
+    // through teardown would describe a process that no longer exists.
+    try {
+      memoryMonitor.stop();
+    } catch (err) {
+      logger.error({ err }, 'memoryMonitor.stop failed');
+    }
     try {
       await schedulerPoller.stop();
     } catch (err) {

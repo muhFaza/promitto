@@ -12,6 +12,20 @@ services:
     # Node + Baileys sockets; the box has ~960MB total and every other service
     # is capped too. Raise this before adding paired numbers, not after an OOM.
     mem_limit: 384m
+    # Until this existed there was no rotation anywhere — no /etc/docker/daemon.json
+    # on the host either — so container logs grew without bound forever. Adding
+    # 5-minute memory telemetry on top of that would have made it worse, which is
+    # why this landed first. 50MB ceiling; at 288 telemetry lines/day it is months
+    # of history.
+    # Per-service and NOT via daemon.json deliberately: a daemon-level default
+    # needs the Docker daemon restarted, which restarts every container on this
+    # box — including the live paired WhatsApp session and Traefik. A compose key
+    # costs one promitto restart, on our schedule.
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "5"
     environment:
       NODE_ENV: production
       PORT: 3000
@@ -40,7 +54,28 @@ services:
       # per-creds.update chmod sweep in manager.ts, not this line — don't read
       # it as "the OOM is handled". Raise this and mem_limit together, never
       # this alone.
-      NODE_OPTIONS: --max-old-space-size=192
+      # --heapsnapshot-near-heap-limit=1 is what finally settles whether a slow
+      # retention leak exists underneath the churn: it dumps a full heap the
+      # moment V8 is about to abort, which is the one moment nobody has ever
+      # managed to catch by hand. `=1` is per PROCESS lifetime, not per host —
+      # `restart: unless-stopped` means a crash loop writes one per restart, so
+      # delete them once analysed; nothing prunes them.
+      # --diagnostic-dir is what makes the snapshot survive. Verified on
+      # node:20-alpine, not assumed: this flag writes to --diagnostic-dir, and
+      # falls back to the process CWD when unset. CWD here is /app/backend (set
+      # by the Dockerfile WORKDIR and again by entrypoint.sh), which is INSIDE
+      # the container — the snapshot would be destroyed with it and we would
+      # learn nothing. /app/backend/data is the bind mount. Both flags are
+      # NODE_OPTIONS-permitted; also verified.
+      # The file is up to ~195MB and is written *during* a memory crisis, so it
+      # costs seconds of stall on a box already thrashing — acceptable, since
+      # the process is aborting anyway. 38GB free, so space is not the concern.
+      # It is written 0600 and contains everything in memory: message text,
+      # session cookies, Baileys keys. Treat it like the DB, not like a log.
+      NODE_OPTIONS: >-
+        --max-old-space-size=192
+        --heapsnapshot-near-heap-limit=1
+        --diagnostic-dir=/app/backend/data
     volumes:
       - ./backend/data:/app/backend/data
     networks:
