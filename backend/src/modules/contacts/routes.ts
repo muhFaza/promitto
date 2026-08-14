@@ -48,6 +48,25 @@ contactsRouter.get('/recent', (req, res, next) => {
   }
 });
 
+// Registered ahead of anything matching `/:id`, though nothing here actually
+// collides: `/recent` is one segment and this is two. The redirect target is a
+// short-lived signed WhatsApp CDN URL, so it is never persisted — the manager
+// caches it in memory and re-fetches when it ages out.
+contactsRouter.get('/:id/avatar', async (req, res, next) => {
+  try {
+    if (!req.user) throw errors.unauthorized();
+    const contact = service.findById(req.user.id, req.params.id);
+    if (!contact) throw errors.notFound('contact');
+    const url = await sessionManager.getAvatarUrl(req.user.id, contact.jid);
+    // No avatar is the ordinary case, not an error: the session may be
+    // disconnected, or the contact's privacy settings hide the picture.
+    if (!url) throw errors.notFound('avatar');
+    res.redirect(302, url);
+  } catch (err) {
+    next(err);
+  }
+});
+
 const CreateBody = z.object({
   phone: z.string().min(3).max(40),
   displayName: z.string().min(1).max(120),
@@ -88,21 +107,18 @@ contactsRouter.post('/', async (req, res, next) => {
   }
 });
 
-const UpdateBody = z
-  .object({
-    displayName: z.string().min(1).max(120).optional(),
-    pinned: z.boolean().optional(),
-  })
-  .refine((b) => b.displayName !== undefined || b.pinned !== undefined, {
-    message: 'Provide displayName and/or pinned',
-  });
+const UpdateBody = z.object({
+  displayName: z.string().min(1).max(120),
+});
 
 contactsRouter.patch('/:id', (req, res, next) => {
   try {
     if (!req.user) throw errors.unauthorized();
     const body = UpdateBody.parse(req.body);
     const id = req.params.id;
-    const updated = service.applyPatch(req.user.id, id, body);
+    const existing = service.findById(req.user.id, id);
+    if (!existing) throw errors.notFound('contact');
+    const updated = service.rename(req.user.id, id, body.displayName);
     if (!updated) throw errors.notFound('contact');
     res.json(serializeContact(updated));
   } catch (err) {

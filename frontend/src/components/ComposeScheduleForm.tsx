@@ -185,7 +185,7 @@ export function ComposeScheduleForm({ onCreated }: Props) {
       <form onSubmit={handleSubmit} className="space-y-6">
         <div className="space-y-3">
           {/* Outside the Field: its <label> may only wrap phrasing content,
-              and the chip row is a <ul> of buttons. */}
+              and the recent-contacts list is a <ul> of buttons. */}
           <ContactQuickPick
             selectedJid={recipient?.jid ?? null}
             onSelect={setRecipient}

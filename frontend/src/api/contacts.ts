@@ -25,13 +25,6 @@ export function rename(id: string, displayName: string) {
   });
 }
 
-export function setPinned(id: string, pinned: boolean) {
-  return apiRequest<Contact>(`/api/contacts/${id}`, {
-    method: 'PATCH',
-    body: { pinned },
-  });
-}
-
 export function remove(id: string) {
   return apiRequest<void>(`/api/contacts/${id}`, { method: 'DELETE' });
 }

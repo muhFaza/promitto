@@ -130,3 +130,60 @@ to extraction + the buffer, which the script covers at the service boundary.
 The migration is the only irreversible piece; it is additive and nullable, and Drizzle
 emits explicit column lists, so the previous image runs unmodified against the new
 schema. The WA listeners must never buffer message bodies — `(jid, ms)` only.
+
+## Amendment (2026-08-15)
+
+Decided by the owner after seeing the branch previewed; the branch was unmerged and
+undeployed, so the changes were made in place rather than layered on top.
+
+**App-local pinning is replaced by a read-only mirror of WhatsApp's real pins.**
+Decision 4 above, the `contacts.pinned_at` column, `setPinned` / `applyPatch`, the
+`pinned` key on `PATCH /:id`, and `ContactPublic.pinnedAt` are all gone. The reason is
+naming, not mechanics: WhatsApp already has pinned chats, and a second, app-local pin
+that does not correspond to them reads as a bug. So instead of inventing a parallel
+concept, the real one is mirrored.
+
+- New nullable `contacts.wa_pinned_at`. Nothing in the API writes it — there is no pin
+  endpoint and no pin control in the UI. The only writer is `recordPinStates()`, fed
+  from WhatsApp.
+- Captured from the three **chat-shaped** events already being consumed
+  (`messaging-history.set`, `chats.upsert`, `chats.update`); `messages.upsert` carries
+  no pin information. `pinned` is read with `'pinned' in c` — an absent key means the
+  event says nothing about pinning and must leave the row alone, while a present-but-
+  falsy value is a genuine unpin. rc14 emits two shapes and both are handled:
+  `proto.IConversation.pinned` is `number|null` (seconds), and one legacy path in
+  `Utils/chat-utils` sets a plain boolean, which is stamped with arrival time.
+- Buffered in a second per-handle map, `pendingPins`, sharing the interaction buffer's
+  debounce, cap, flush (`flushPendingRecency`) and teardown. It is **latest-wins, not
+  max**: pin state is a fact being mirrored, and a max rule cannot express an unpin.
+  `recordPinStates()` is correspondingly non-monotonic, unlike `recordInteractions()`.
+- `listRecent()` orders `wa_pinned_at IS NOT NULL` first, `wa_pinned_at DESC` within
+  that block (newest pin first, as WhatsApp orders it), then
+  `COALESCE(last_interaction_at, last_scheduled_at) DESC`. A WA-pinned contact always
+  appears, even with no other signal. `list()` stays plain alphabetical.
+
+**Accrual caveat.** WhatsApp's app-state sync delivers pin *changes*, not the historical
+set, so on the already-paired production session the pins that exist today will not
+appear until each is unpinned and re-pinned on the phone. Future pin/unpin actions
+arrive live. This is the same shape as the interaction-recency caveat in decision 1, and
+there is no fallback for it — an empty pinned block is the expected initial state.
+
+Migration 0006 was regenerated rather than amended (twice — once to drop `pinned_at`,
+once to add `wa_pinned_at`), so the branch still ships exactly one migration. It now
+emits `last_interaction_at` + `wa_pinned_at` + `contacts_user_recent_idx (user_id,
+last_interaction_at)`. The index deliberately does not cover `wa_pinned_at`: the pinned
+block is a handful of rows out of a per-user contact list, and the sort is already
+bounded by the same `LIMIT`.
+
+**Avatars are added.** Recent rows show the contact's WhatsApp profile picture.
+`GET /api/contacts/:id/avatar` looks the contact up user-scoped, asks
+`sessionManager.getAvatarUrl()`, and 302s to the WA CDN URL — the image is never
+fetched or proxied through this process, so nothing is buffered on a 195 MB heap.
+`getAvatarUrl()` returns null (never throws) when the session is not connected, when
+the contact hides their picture, and on any error; results are cached per handle for
+6h on a hit and 10min on a miss, so a disconnected session costs one lookup per contact
+per 10 minutes rather than one per render. The cache is cleared alongside the
+credentials on logout. 404 `avatar` is the no-picture answer, and it is routine.
+
+**Quick-pick is restyled from chips to rows** to carry the avatar and the phone number
+(frontend change).

@@ -5,10 +5,6 @@ import { contacts, scheduledMessages, type Contact } from '../../db/schema.js';
 
 export type ListInput = { userId: string; search?: string; limit?: number };
 
-// Pinned contacts sort ahead of everything else; SQLite has no NULLS LAST, so
-// the `IS NULL` expression carries the block ordering (0 = pinned first).
-const pinnedFirst = sql`(${contacts.pinnedAt} is null)`;
-
 export function list({ userId, search, limit = 50 }: ListInput): Contact[] {
   const cappedLimit = Math.min(Math.max(1, limit), 200);
   const trimmed = search?.trim();
@@ -29,7 +25,7 @@ export function list({ userId, search, limit = 50 }: ListInput): Contact[] {
           ),
         ),
       )
-      .orderBy(pinnedFirst, asc(contacts.pinnedAt), asc(contacts.displayName))
+      .orderBy(asc(contacts.displayName))
       .limit(cappedLimit)
       .all();
   }
@@ -38,16 +34,17 @@ export function list({ userId, search, limit = 50 }: ListInput): Contact[] {
     .select()
     .from(contacts)
     .where(eq(contacts.userId, userId))
-    .orderBy(pinnedFirst, asc(contacts.pinnedAt), asc(contacts.displayName))
+    .orderBy(asc(contacts.displayName))
     .limit(cappedLimit)
     .all();
 }
 
-// Quick-pick ordering: pinned contacts first (stable, by pin time), then the
-// rest by real WhatsApp interaction recency, falling back to the newest
-// schedule created for that recipient so the list is useful before any WA
-// traffic has accrued. A contact with neither signal is not "recent" and is
-// left out — pinning is the only way to force one in.
+// Quick-pick ordering: chats the user pinned *in WhatsApp* first (newest pin
+// first, as WhatsApp itself orders them), then real interaction recency,
+// falling back to the newest schedule created for that recipient so the list
+// is useful before any WA traffic has accrued. A contact with none of the
+// three signals is not "recent" and is left out entirely; a WA-pinned one
+// always appears.
 export function listRecent(userId: string, limit = 8): Contact[] {
   const cappedLimit = Math.min(Math.max(1, limit), 50);
 
@@ -71,15 +68,17 @@ export function listRecent(userId: string, limit = 8): Contact[] {
       and(
         eq(contacts.userId, userId),
         or(
-          sql`${contacts.pinnedAt} is not null`,
+          sql`${contacts.waPinnedAt} is not null`,
           sql`${contacts.lastInteractionAt} is not null`,
           sql`${lastScheduled.lastScheduledAt} is not null`,
         ),
       ),
     )
+    // SQLite has no NULLS LAST, so the `IS NULL` expression carries the block
+    // ordering (0 = pinned first).
     .orderBy(
-      pinnedFirst,
-      asc(contacts.pinnedAt),
+      sql`(${contacts.waPinnedAt} is null)`,
+      sql`${contacts.waPinnedAt} desc`,
       sql`coalesce(${contacts.lastInteractionAt}, ${lastScheduled.lastScheduledAt}) desc`,
     )
     .limit(cappedLimit)
@@ -193,54 +192,6 @@ export function rename(userId: string, id: string, displayName: string): Contact
   return findById(userId, id);
 }
 
-export function setPinned(userId: string, id: string, pinned: boolean): Contact | null {
-  const now = new Date();
-  if (pinned) {
-    // `isNull` guard keeps a repeat pin from restamping pinned_at, which would
-    // reshuffle the pinned block under the caller.
-    db.update(contacts)
-      .set({ pinnedAt: now, updatedAt: now })
-      .where(
-        and(
-          eq(contacts.userId, userId),
-          eq(contacts.id, id),
-          isNull(contacts.pinnedAt),
-        ),
-      )
-      .run();
-  } else {
-    db.update(contacts)
-      .set({ pinnedAt: null, updatedAt: now })
-      .where(and(eq(contacts.userId, userId), eq(contacts.id, id)))
-      .run();
-  }
-  return findById(userId, id);
-}
-
-// A PATCH carrying both keys must not half-apply: as two independent statements
-// a failure between them leaves a renamed-but-unpinned row behind a 500.
-export function applyPatch(
-  userId: string,
-  id: string,
-  patch: { displayName?: string; pinned?: boolean },
-): Contact | null {
-  return sqlite
-    .transaction((): Contact | null => {
-      let row = findById(userId, id);
-      if (!row) return null;
-      if (patch.displayName !== undefined) {
-        row = rename(userId, id, patch.displayName);
-        if (!row) return null;
-      }
-      if (patch.pinned !== undefined) {
-        row = setPinned(userId, id, patch.pinned);
-        if (!row) return null;
-      }
-      return row;
-    })
-    .immediate();
-}
-
 // Fed by the WA session manager's debounced interaction buffer. UPDATE-only by
 // design: chats arrive from numbers that were never saved as contacts and carry
 // no usable display name, so contact creation stays with contacts.upsert. The
@@ -270,6 +221,32 @@ export function recordInteractions(
               ),
             ),
           )
+          .run();
+      }
+    })
+    .immediate();
+}
+
+// The write half of the read-only WhatsApp pin mirror: read-only means the
+// *user* never sets this through the app, not that it never changes. Fed by
+// the session manager's pin buffer, UPDATE-only for the same reason as
+// recordInteractions, and deliberately NOT monotonic — the newest event is the
+// current state, so a null (unpin) must be able to overwrite a timestamp, and
+// a re-pin with an older stamp than the last one still applies.
+export function recordPinStates(
+  userId: string,
+  pins: ReadonlyMap<string, number | null>,
+): void {
+  if (pins.size === 0) return;
+
+  sqlite
+    .transaction(() => {
+      for (const [jid, ms] of pins) {
+        // Same reasoning as recordInteractions: updated_at means "last user
+        // edit", and this is not one.
+        db.update(contacts)
+          .set({ waPinnedAt: ms === null ? null : new Date(ms) })
+          .where(and(eq(contacts.userId, userId), eq(contacts.jid, jid)))
           .run();
       }
     })

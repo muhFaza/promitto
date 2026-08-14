@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "d60f6bb8-eb50-4c05-8511-26f5a77eaca4",
+  "id": "505269f4-d383-4a78-8667-162d43699a9c",
   "prevId": "5af1f440-af3b-4f10-8b34-7f28f23f1b2d",
   "tables": {
     "contacts": {
@@ -56,15 +56,15 @@
           "notNull": false,
           "autoincrement": false
         },
-        "pinned_at": {
-          "name": "pinned_at",
+        "last_interaction_at": {
+          "name": "last_interaction_at",
           "type": "integer",
           "primaryKey": false,
           "notNull": false,
           "autoincrement": false
         },
-        "last_interaction_at": {
-          "name": "last_interaction_at",
+        "wa_pinned_at": {
+          "name": "wa_pinned_at",
           "type": "integer",
           "primaryKey": false,
           "notNull": false,
@@ -108,7 +108,6 @@
           "name": "contacts_user_recent_idx",
           "columns": [
             "user_id",
-            "pinned_at",
             "last_interaction_at"
           ],
           "isUnique": false

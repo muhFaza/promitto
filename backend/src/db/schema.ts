@@ -85,8 +85,10 @@ export const contacts = sqliteTable(
     phone: text('phone').notNull(),
     source: text('source', { enum: ['synced', 'manual'] }).notNull(),
     verifiedOnWhatsapp: integer('verified_on_whatsapp', { mode: 'boolean' }),
-    pinnedAt: integer('pinned_at', { mode: 'timestamp_ms' }),
     lastInteractionAt: integer('last_interaction_at', { mode: 'timestamp_ms' }),
+    // Read-only mirror of WhatsApp's own chat pin. Written only from WA chat
+    // events; nothing in this app ever sets it on a user's behalf.
+    waPinnedAt: integer('wa_pinned_at', { mode: 'timestamp_ms' }),
     createdAt: integer('created_at', { mode: 'timestamp_ms' })
       .notNull()
       .default(sql`(unixepoch() * 1000)`),
@@ -99,7 +101,6 @@ export const contacts = sqliteTable(
     userSearchIdx: index('contacts_user_search_idx').on(t.userId, t.displayName),
     userRecentIdx: index('contacts_user_recent_idx').on(
       t.userId,
-      t.pinnedAt,
       t.lastInteractionAt,
     ),
   }),

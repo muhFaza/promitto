@@ -2,19 +2,19 @@ import { create } from 'zustand';
 import * as contactsApi from '../api/contacts';
 import type { Contact } from '../lib/types';
 
-const RECENT_LIMIT = 8;
+// Rows, not chips — six keeps the compose section from turning into a list page.
+const RECENT_LIMIT = 6;
 
 type ContactsState = {
   recent: Contact[];
   loaded: boolean;
   load: () => Promise<void>;
-  togglePin: (c: Contact) => Promise<void>;
   reset: () => void;
 };
 
-// Shared so pinning on /app/contacts reorders the Dashboard quick-pick row
+// Shared so a fresh send from compose reorders the Dashboard quick-pick
 // without a manual refetch there.
-export const useContactsStore = create<ContactsState>()((set, get) => ({
+export const useContactsStore = create<ContactsState>()((set) => ({
   recent: [],
   loaded: false,
 
@@ -23,16 +23,10 @@ export const useContactsStore = create<ContactsState>()((set, get) => ({
       const r = await contactsApi.recent(RECENT_LIMIT);
       set({ recent: r.contacts, loaded: true });
     } catch {
-      // The quick-pick row is an accelerator, not a control — a failed fetch
+      // The quick-pick list is an accelerator, not a control — a failed fetch
       // hides it and leaves the picker to do the work. No toast.
       set({ loaded: true });
     }
-  },
-
-  async togglePin(c) {
-    // ApiError propagates: the caller owns the error surface.
-    await contactsApi.setPinned(c.id, c.pinnedAt === null);
-    await get().load();
   },
 
   // `loaded` latches, and logout is an SPA transition with no reload anywhere —

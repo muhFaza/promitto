@@ -1,7 +1,7 @@
 /**
- * Non-interactive check for the recent/pinned contacts feature: exercises
- * `recordInteractions`, `listRecent` and `setPinned` against a throwaway SQLite
- * file so the dev DB is never touched. Usage:
+ * Non-interactive check for the recent contacts feature: exercises
+ * `recordInteractions`, `recordPinStates` and `listRecent` against a throwaway
+ * SQLite file so the dev DB is never touched. Usage:
  *   tsx scripts/test-interaction-flush.ts
  *
  * Exits non-zero on the first failed assertion; the temp DB is removed either way.
@@ -10,7 +10,6 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { rmSync } from 'node:fs';
-import { setTimeout as sleep } from 'node:timers/promises';
 
 // Must be set before ../src/db/client.js is loaded — it resolves DATABASE_PATH
 // at import time. Hence the dynamic imports below.
@@ -58,6 +57,8 @@ const charlie: Seed = {
   jid: '6281100000003@s.whatsapp.net',
   phone: '+6281100000003',
 };
+// No interaction and no schedule — its only route into the recents list is a
+// WhatsApp pin, which is what makes it the interesting case in (f).
 const delta: Seed = {
   id: randomUUID(),
   name: 'Delta',
@@ -107,7 +108,7 @@ function seed(): void {
 
   // Alpha: an old schedule, so its ordering must come from the WA interaction.
   // Bravo: a recent schedule and no WA interaction — the fallback signal.
-  // Charlie: nothing at all. Delta: pinned only.
+  // Charlie and Delta: nothing at all until Delta gets pinned in (f).
   const schedules: Array<{ jid: string; name: string; createdAt: number }> = [
     { jid: alpha.jid, name: alpha.name, createdAt: NOW - 30 * DAY },
     { jid: bravo.jid, name: bravo.name, createdAt: NOW - 2 * HOUR },
@@ -132,8 +133,8 @@ function seed(): void {
 
   // Cross-tenant bait: user 2 schedules to Charlie's jid one minute ago. Charlie
   // is user 1's contact and must stay excluded from user 1's recents; if the
-  // subquery's userId filter were dropped, this would surface Charlie near the
-  // top and assertions (c)/(g) would fail.
+  // subquery's userId filter were dropped, this would surface Charlie at the
+  // top and assertions (c)/(e) would fail.
   db.insert(scheduledMessages)
     .values({
       id: randomUUID(),
@@ -157,13 +158,18 @@ function interactionAt(id: string): number | null {
   return row.lastInteractionAt?.getTime() ?? null;
 }
 
+function pinnedAt(id: string): number | null {
+  const row = contactsService.findById(userId, id);
+  assert.ok(row, `contact ${id} should exist`);
+  return row.waPinnedAt?.getTime() ?? null;
+}
+
+function recentNames(): string[] {
+  return contactsService.listRecent(userId, 8).map((c) => c.displayName);
+}
+
 async function run(): Promise<void> {
   seed();
-
-  // Pin Delta, then re-pin later to prove the timestamp is not restamped.
-  const firstPin = contactsService.setPinned(userId, delta.id, true);
-  assert.ok(firstPin?.pinnedAt, 'Delta should be pinned');
-  const firstPinnedAt = firstPin.pinnedAt.getTime();
 
   // Alpha's recency comes from the interaction buffer, not from its schedule.
   contactsService.recordInteractions(userId, new Map([[alpha.jid, NOW - HOUR]]));
@@ -200,22 +206,14 @@ async function run(): Promise<void> {
   );
   pass('(b) scheduling fallback ranks a scheduled-to contact above a never-touched one');
 
-  // (c) Never-touched, unpinned contacts are excluded entirely.
+  // (c) Never-touched contacts are excluded entirely.
   assert.ok(
     !recent.some((c) => c.id === charlie.id),
     `Charlie should be excluded — got ${JSON.stringify(order)}`,
   );
-  pass('(c) never-touched unpinned contact is excluded');
+  pass('(c) never-touched contact is excluded');
 
-  // (d) Pinned wins over every recency signal.
-  assert.equal(
-    order[0],
-    'Delta',
-    `pinned Delta should be first — got ${JSON.stringify(order)}`,
-  );
-  pass('(d) pinned-but-never-touched contact appears first');
-
-  // (e) A late-arriving older timestamp must not regress a newer one.
+  // (d) A late-arriving older timestamp must not regress a newer one.
   contactsService.recordInteractions(userId, new Map([[alpha.jid, NOW - 5 * HOUR]]));
   assert.equal(
     interactionAt(alpha.id),
@@ -228,20 +226,9 @@ async function run(): Promise<void> {
     NOW - MINUTE,
     'a newer timestamp should still advance last_interaction_at',
   );
-  pass('(e) stale recordInteractions timestamp does not regress a newer value');
+  pass('(d) stale recordInteractions timestamp does not regress a newer value');
 
-  // (f) Re-pinning keeps the original pinned_at, so the pinned block does not
-  //     reshuffle under the caller.
-  await sleep(15);
-  const secondPin = contactsService.setPinned(userId, delta.id, true);
-  assert.equal(
-    secondPin?.pinnedAt?.getTime(),
-    firstPinnedAt,
-    'repeat pin must not restamp pinned_at',
-  );
-  pass('(f) repeat pin keeps the original pinnedAt');
-
-  // (g) Tenancy: user 2's schedule to Charlie's jid must not rank Charlie for
+  // (e) Tenancy: user 2's schedule to Charlie's jid must not rank Charlie for
   //     user 1, and must not perturb user 1's ordering at all.
   const afterCrossTenant = contactsService
     .listRecent(userId, 8)
@@ -250,7 +237,7 @@ async function run(): Promise<void> {
     !afterCrossTenant.includes('Charlie'),
     `another user's schedule must not surface Charlie — got ${JSON.stringify(afterCrossTenant)}`,
   );
-  // Alpha advanced to NOW - MINUTE in (e); order is otherwise unchanged.
+  // Alpha advanced to NOW - MINUTE in (d); order is otherwise unchanged.
   assert.deepEqual(
     afterCrossTenant,
     order,
@@ -262,7 +249,62 @@ async function run(): Promise<void> {
     [],
     'the other tenant has no contacts and must get an empty list',
   );
-  pass('(g) scheduling fallback is scoped per user');
+  pass('(e) scheduling fallback is scoped per user');
+
+  // (f) A WhatsApp pin outranks every recency signal, the pinned block is
+  //     ordered newest-pin-first (as WhatsApp orders it), and Delta — which has
+  //     no interaction and no schedule — is dragged into the list by the pin
+  //     alone. Alpha's own interaction is the newest in the set, so its
+  //     position here is decided by the pin, not by recency.
+  contactsService.recordPinStates(
+    userId,
+    new Map([
+      [delta.jid, NOW - 2 * DAY],
+      [alpha.jid, NOW - HOUR],
+    ]),
+  );
+  const pinned = recentNames();
+  assert.deepEqual(
+    pinned,
+    ['Alpha', 'Delta', 'Bravo'],
+    `WA-pinned rows should lead, newest pin first — got ${JSON.stringify(pinned)}`,
+  );
+  pass('(f) WA pin leads the list, newest-pin-first, and surfaces a signalless contact');
+
+  // (g) An unpin arrives as an explicit null and must drop the row out of the
+  //     pinned block — back to plain recency, where Alpha's NOW-MINUTE
+  //     interaction still beats Bravo but no longer beats a pinned Delta.
+  contactsService.recordPinStates(userId, new Map([[alpha.jid, null]]));
+  assert.equal(pinnedAt(alpha.id), null, 'unpin should null wa_pinned_at');
+  const unpinned = recentNames();
+  assert.deepEqual(
+    unpinned,
+    ['Delta', 'Alpha', 'Bravo'],
+    `unpinned Alpha should fall back to recency order — got ${JSON.stringify(unpinned)}`,
+  );
+  pass('(g) unpin removes the row from the pinned block');
+
+  // (h) Pin state is latest-wins, NOT monotonic: a re-pin carrying a timestamp
+  //     older than both the previous pin and Delta's must still apply, and must
+  //     sort Alpha *below* Delta inside the pinned block. A max-based rule
+  //     (which is correct for last_interaction_at) would silently drop this.
+  contactsService.recordPinStates(userId, new Map([[alpha.jid, NOW - 10 * DAY]]));
+  assert.equal(
+    pinnedAt(alpha.id),
+    NOW - 10 * DAY,
+    'an older pin timestamp must still overwrite — pin state is not monotonic',
+  );
+  const repinned = recentNames();
+  assert.deepEqual(
+    repinned,
+    ['Delta', 'Alpha', 'Bravo'],
+    `re-pinned Alpha should sort below the newer-pinned Delta — got ${JSON.stringify(repinned)}`,
+  );
+  assert.ok(
+    pinnedAt(delta.id) === NOW - 2 * DAY,
+    "Delta's pin must be untouched by Alpha's update",
+  );
+  pass('(h) pin state is latest-wins, not monotonic');
 }
 
 let failure: unknown = null;
@@ -279,9 +321,9 @@ try {
 
 if (failure) {
   console.error(failure instanceof Error ? failure.message : failure);
-  console.error(`FAIL after ${passed}/7 assertions`);
+  console.error(`FAIL after ${passed}/8 assertions`);
   process.exit(1);
 }
 
-console.log(`OK ${passed}/7 assertions passed`);
+console.log(`OK ${passed}/8 assertions passed`);
 process.exit(0);

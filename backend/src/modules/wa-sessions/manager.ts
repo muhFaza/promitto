@@ -87,12 +87,20 @@ type PendingContact = { jid: string; displayName: string; phone: string };
 type WaTimestamp = number | { toString(): string } | null | undefined;
 
 // The shape shared by `Chat`, `ChatUpdate` and the chats carried on
-// `messaging-history.set`; only the recency fields are of interest.
+// `messaging-history.set`; only the recency and pin fields are of interest.
+//
+// `pinned` is genuinely two-typed in rc14: proto.IConversation declares it
+// `number|null` (a pin timestamp in seconds, which is what app-state pin
+// actions produce), while one legacy path in Utils/chat-utils sets a plain
+// boolean. Both are handled. The distinction that matters is *present and
+// falsy* (an unpin) versus *absent* (this event says nothing about pinning) —
+// which is why the field is optional and read with `in`, never truthiness.
 type ChatLike = {
   id?: string | null;
   conversationTimestamp?: WaTimestamp;
   lastMessageRecvTimestamp?: WaTimestamp;
   timestamp?: WaTimestamp;
+  pinned?: number | boolean | null;
 };
 
 type Handle = {
@@ -136,13 +144,32 @@ type Handle = {
   // is retained: message bodies and chat objects are read and dropped in the
   // same tick.
   pendingInteractions: Map<string, number>;
+  // jid → WhatsApp's pin timestamp (epoch ms), or null for an unpin. Unlike
+  // pendingInteractions this is LATEST-WINS, not max: pin state is a fact
+  // being mirrored, and the newest event is simply the current one. A max
+  // would make an unpin unrepresentable.
+  pendingPins: Map<string, number | null>;
   interactionDebounceTimer: NodeJS.Timeout | null;
+  // jid → last profile-picture lookup. Only the URL string and the fetch time
+  // are kept; the image itself is never proxied or buffered through this
+  // process. Cleared with the credentials, since a new pairing may see a
+  // different set of pictures.
+  avatarCache: Map<string, AvatarCacheEntry>;
   intentionalClose: boolean;
 };
+
+type AvatarCacheEntry = { url: string | null; at: number };
 
 const CONNECT_SETTLE_TIMEOUT_MS = 15_000;
 const CONTACT_SYNC_DEBOUNCE_MS = 2_000;
 const CONTACT_SYNC_MAX_BUFFER = 200;
+const AVATAR_TIMEOUT_MS = 5_000;
+// A picture that exists changes rarely, so it is cached for the day's work. A
+// miss — disconnected session, privacy-blocked contact, no picture set — is
+// cached far shorter but still cached: without it every dashboard render would
+// pay a round trip per row to learn the same nothing.
+const AVATAR_TTL_MS = 6 * 60 * 60 * 1_000;
+const AVATAR_MISS_TTL_MS = 10 * 60 * 1_000;
 
 let cachedWaVersion: [number, number, number] | null = null;
 let versionFetchPromise: Promise<[number, number, number] | null> | null = null;
@@ -207,7 +234,9 @@ class SessionManager {
       syncDebounceTimer: null,
       pendingContacts: new Map(),
       pendingInteractions: new Map(),
+      pendingPins: new Map(),
       interactionDebounceTimer: null,
+      avatarCache: new Map(),
       intentionalClose: false,
     };
     h.events.setMaxListeners(32);
@@ -471,6 +500,12 @@ class SessionManager {
         waTsToMs(c.lastMessageRecvTimestamp) ??
         waTsToMs(c.timestamp);
       if (ms) this.recordInteraction(h, c.id, ms);
+
+      // `in` rather than a truthiness or `!= null` test: an unpin arrives as
+      // `pinned: null` and a chat event that simply isn't about pinning omits
+      // the key entirely. Collapsing those two would make every unrelated
+      // chats.update silently unpin the row.
+      if ('pinned' in c) this.recordPin(h, c.id, pinToMs(c.pinned));
     }
   }
 
@@ -483,34 +518,66 @@ class SessionManager {
     if (existing !== undefined && existing >= ms) return;
     h.pendingInteractions.set(jid, ms);
 
-    if (h.pendingInteractions.size >= CONTACT_SYNC_MAX_BUFFER) {
-      this.flushPendingInteractions(h);
+    this.armRecencyFlush(h);
+  }
+
+  // Latest-wins, deliberately unlike recordInteraction: this mirrors a state,
+  // not a high-water mark, so the newest event always overwrites — including
+  // an unpin (null), which no max-based rule could express.
+  private recordPin(h: Handle, jid: string, at: number | null): void {
+    if (!isUserJid(jid)) return;
+    h.pendingPins.set(jid, at);
+    this.armRecencyFlush(h);
+  }
+
+  private armRecencyFlush(h: Handle): void {
+    if (
+      h.pendingInteractions.size >= CONTACT_SYNC_MAX_BUFFER ||
+      h.pendingPins.size >= CONTACT_SYNC_MAX_BUFFER
+    ) {
+      this.flushPendingRecency(h);
       return;
     }
 
     if (h.interactionDebounceTimer) clearTimeout(h.interactionDebounceTimer);
     h.interactionDebounceTimer = setTimeout(() => {
-      this.flushPendingInteractions(h);
+      this.flushPendingRecency(h);
     }, CONTACT_SYNC_DEBOUNCE_MS);
   }
 
-  private flushPendingInteractions(h: Handle): void {
+  // Both buffers drain together: they are fed by the same events and share one
+  // timer, so flushing them separately would only create a window where a
+  // chat's pin state and its recency disagree.
+  private flushPendingRecency(h: Handle): void {
     if (h.interactionDebounceTimer) {
       clearTimeout(h.interactionDebounceTimer);
       h.interactionDebounceTimer = null;
     }
-    if (h.pendingInteractions.size === 0) return;
 
-    const batch = new Map(h.pendingInteractions);
-    h.pendingInteractions.clear();
+    if (h.pendingInteractions.size > 0) {
+      const batch = new Map(h.pendingInteractions);
+      h.pendingInteractions.clear();
+      try {
+        contactsService.recordInteractions(h.userId, batch);
+      } catch (err) {
+        logger.warn(
+          { err, userId: h.userId, count: batch.size },
+          'recordInteractions flush failed',
+        );
+      }
+    }
 
-    try {
-      contactsService.recordInteractions(h.userId, batch);
-    } catch (err) {
-      logger.warn(
-        { err, userId: h.userId, count: batch.size },
-        'recordInteractions flush failed',
-      );
+    if (h.pendingPins.size > 0) {
+      const batch = new Map(h.pendingPins);
+      h.pendingPins.clear();
+      try {
+        contactsService.recordPinStates(h.userId, batch);
+      } catch (err) {
+        logger.warn(
+          { err, userId: h.userId, count: batch.size },
+          'recordPinStates flush failed',
+        );
+      }
     }
   }
 
@@ -638,6 +705,43 @@ class SessionManager {
     }
   }
 
+  // Resolves a contact's profile picture to a WhatsApp CDN URL for the caller to
+  // redirect to; never fetches or proxies the image itself. 'preview' is the
+  // small variant, which is all a 36px avatar needs.
+  //
+  // Returns null rather than throwing on every failure path — an avatar is
+  // decoration, and a disconnected session is the common case, not an error.
+  async getAvatarUrl(userId: string, jid: string): Promise<string | null> {
+    const h = this.handles.get(userId);
+    if (!h) return null;
+
+    const now = Date.now();
+    const cached = h.avatarCache.get(jid);
+    if (cached && now - cached.at < (cached.url ? AVATAR_TTL_MS : AVATAR_MISS_TTL_MS)) {
+      return cached.url;
+    }
+
+    // Cached as a miss, not skipped: otherwise a disconnected session makes
+    // every row on every dashboard visit re-enter this path.
+    if (!h.sock || h.status !== 'connected') {
+      h.avatarCache.set(jid, { url: null, at: now });
+      return null;
+    }
+
+    try {
+      const url = await h.sock.profilePictureUrl(jid, 'preview', AVATAR_TIMEOUT_MS);
+      const resolved = url ?? null;
+      h.avatarCache.set(jid, { url: resolved, at: Date.now() });
+      return resolved;
+    } catch (err) {
+      // 404 (no picture) and 401 (hidden by privacy settings) both land here and
+      // are entirely routine, so this stays at debug.
+      logger.debug({ err, userId, jid }, 'profilePictureUrl failed');
+      h.avatarCache.set(jid, { url: null, at: Date.now() });
+      return null;
+    }
+  }
+
   // Every status write in here goes through trySetStatus. This whole function
   // runs inside Baileys' ev.emit, so a synchronous SQLITE_BUSY would propagate
   // into the socket's message processing — and with the process-level fatal
@@ -733,6 +837,7 @@ class SessionManager {
 
       if (isLoggedOut) {
         void this.wipeAuthState(h.authStatePath);
+        h.avatarCache.clear();
         h.latestQr = null;
         this.trySetStatus(h, 'logged_out', {
           error: 'Logged out from phone',
@@ -863,7 +968,7 @@ class SessionManager {
         h.reconnectTimer = null;
       }
       this.flushPendingContacts(h);
-      this.flushPendingInteractions(h);
+      this.flushPendingRecency(h);
 
       if (h.sock) {
         try {
@@ -880,6 +985,7 @@ class SessionManager {
 
       if (opts.logout) {
         await this.wipeAuthState(h.authStatePath);
+        h.avatarCache.clear();
         h.latestQr = null;
         this.setStatus(h, 'logged_out', { error: null, jid: null });
       } else {
@@ -1154,7 +1260,7 @@ class SessionManager {
         h.interactionDebounceTimer = null;
       }
       this.flushPendingContacts(h);
-      this.flushPendingInteractions(h);
+      this.flushPendingRecency(h);
       if (h.sock) {
         try {
           await h.sock.end(undefined);
@@ -1329,6 +1435,18 @@ function waTsToMs(ts: WaTimestamp): number | null {
   const n = typeof ts === 'number' ? ts : Number(ts.toString());
   if (!Number.isFinite(n) || n <= 0) return null;
   return n < 1e12 ? Math.round(n * 1000) : Math.round(n);
+}
+
+// The pin field, normalized to "pinned at this instant" or "not pinned".
+// Callers must only reach this when the key is actually present — an absent
+// key means the event says nothing about pinning, which is not the same as
+// unpinned. The boolean form carries no timestamp of its own (one legacy path
+// in Baileys sets `!!mod.pin`), so it is stamped with arrival time; that only
+// affects ordering within the pinned block, never whether a row is pinned.
+function pinToMs(pinned: number | boolean | null | undefined): number | null {
+  if (pinned === true) return Date.now();
+  if (typeof pinned !== 'number') return null;
+  return waTsToMs(pinned);
 }
 
 function toMessage(err: unknown): string {
