@@ -89,12 +89,14 @@ type WaTimestamp = number | { toString(): string } | null | undefined;
 // The shape shared by `Chat`, `ChatUpdate` and the chats carried on
 // `messaging-history.set`; only the recency and pin fields are of interest.
 //
-// `pinned` is genuinely two-typed in rc14: proto.IConversation declares it
-// `number|null` (a pin timestamp in seconds, which is what app-state pin
-// actions produce), while one legacy path in Utils/chat-utils sets a plain
-// boolean. Both are handled. The distinction that matters is *present and
-// falsy* (an unpin) versus *absent* (this event says nothing about pinning) —
-// which is why the field is optional and read with `in`, never truthiness.
+// Inbound, `pinned` is always `number | null` in rc14 — a pin timestamp in
+// seconds, which is what app-state pin actions produce and what the only
+// inbound emit path normalizes to. The `boolean` in the type (and the matching
+// branch in pinToMs) is defensive only: rc14's boolean pin site,
+// Utils/chat-utils.js:491, builds an *outbound* patch and is never emitted back
+// to us. The distinction that actually matters is *present and falsy* (an
+// unpin) versus *absent* (this event says nothing about pinning) — which is why
+// the field is optional and read by key presence, never truthiness.
 type ChatLike = {
   id?: string | null;
   conversationTimestamp?: WaTimestamp;
@@ -164,6 +166,14 @@ const CONNECT_SETTLE_TIMEOUT_MS = 15_000;
 const CONTACT_SYNC_DEBOUNCE_MS = 2_000;
 const CONTACT_SYNC_MAX_BUFFER = 200;
 const AVATAR_TIMEOUT_MS = 5_000;
+// Baileys applies AVATAR_TIMEOUT_MS to the IQ round trip only; the awaits ahead
+// of it (tc-token fetch, LID resolution) are unbounded, so the call as a whole
+// has no ceiling without this outer one.
+const AVATAR_CALL_TIMEOUT_MS = 7_000;
+// Bounded in practice by the user's contact count, which is small. This is a
+// backstop against an unforeseen jid firehose on a 195MB heap, not a working
+// eviction policy — hence clear-all rather than LRU.
+const AVATAR_CACHE_MAX = 1_000;
 // A picture that exists changes rarely, so it is cached for the day's work. A
 // miss — disconnected session, privacy-blocked contact, no picture set — is
 // cached far shorter but still cached: without it every dashboard render would
@@ -501,11 +511,22 @@ class SessionManager {
         waTsToMs(c.timestamp);
       if (ms) this.recordInteraction(h, c.id, ms);
 
-      // `in` rather than a truthiness or `!= null` test: an unpin arrives as
-      // `pinned: null` and a chat event that simply isn't about pinning omits
-      // the key entirely. Collapsing those two would make every unrelated
-      // chats.update silently unpin the row.
-      if ('pinned' in c) this.recordPin(h, c.id, pinToMs(c.pinned));
+      // Presence of the key — not truthiness, not `!= null` — is the test: an
+      // unpin arrives as `pinned: null`, while a chat event that isn't about
+      // pinning omits it entirely, and collapsing those two would make every
+      // unrelated chats.update silently unpin the row.
+      //
+      // hasOwnProperty rather than `in`, and the distinction is load-bearing:
+      // chats decoded from protobuf (`messaging-history.set`, and the buffered
+      // `chats.upsert` that carries decoded conversations) are proto.Conversation
+      // instances whose *prototype* defines `pinned = null`, so `'pinned' in c`
+      // is true for every one of them and a history sync would mass-unpin the
+      // whole contact list. A real pin — decode-assigned, a chats.update literal,
+      // or a value merged in by the event buffer's Object.assign — is always an
+      // own property.
+      if (Object.prototype.hasOwnProperty.call(c, 'pinned')) {
+        this.recordPin(h, c.id, pinToMs(c.pinned));
+      }
     }
   }
 
@@ -724,22 +745,47 @@ class SessionManager {
     // Cached as a miss, not skipped: otherwise a disconnected session makes
     // every row on every dashboard visit re-enter this path.
     if (!h.sock || h.status !== 'connected') {
-      h.avatarCache.set(jid, { url: null, at: now });
+      this.cacheAvatar(h, jid, null);
       return null;
     }
 
+    const sock = h.sock;
+    // The inner timeout only bounds the IQ; the race bounds the whole call,
+    // including the pre-query awaits. The loser is left to settle on its own —
+    // hence the attached catch, without which a late rejection would be
+    // unhandled and the process-level fatal handler in main.ts would take the
+    // process down over a decoration.
+    const query = sock
+      .profilePictureUrl(jid, 'preview', AVATAR_TIMEOUT_MS)
+      .then((url) => url ?? null);
+    query.catch(() => {});
+
+    let timer: NodeJS.Timeout | undefined;
     try {
-      const url = await h.sock.profilePictureUrl(jid, 'preview', AVATAR_TIMEOUT_MS);
-      const resolved = url ?? null;
-      h.avatarCache.set(jid, { url: resolved, at: Date.now() });
+      const resolved = await Promise.race<string | null>([
+        query,
+        new Promise<null>((resolve) => {
+          timer = setTimeout(() => {
+            resolve(null);
+          }, AVATAR_CALL_TIMEOUT_MS);
+        }),
+      ]);
+      this.cacheAvatar(h, jid, resolved);
       return resolved;
     } catch (err) {
       // 404 (no picture) and 401 (hidden by privacy settings) both land here and
       // are entirely routine, so this stays at debug.
       logger.debug({ err, userId, jid }, 'profilePictureUrl failed');
-      h.avatarCache.set(jid, { url: null, at: Date.now() });
+      this.cacheAvatar(h, jid, null);
       return null;
+    } finally {
+      if (timer) clearTimeout(timer);
     }
+  }
+
+  private cacheAvatar(h: Handle, jid: string, url: string | null): void {
+    if (h.avatarCache.size >= AVATAR_CACHE_MAX) h.avatarCache.clear();
+    h.avatarCache.set(jid, { url, at: Date.now() });
   }
 
   // Every status write in here goes through trySetStatus. This whole function
@@ -1438,11 +1484,13 @@ function waTsToMs(ts: WaTimestamp): number | null {
 }
 
 // The pin field, normalized to "pinned at this instant" or "not pinned".
-// Callers must only reach this when the key is actually present — an absent
-// key means the event says nothing about pinning, which is not the same as
-// unpinned. The boolean form carries no timestamp of its own (one legacy path
-// in Baileys sets `!!mod.pin`), so it is stamped with arrival time; that only
-// affects ordering within the pinned block, never whether a row is pinned.
+// Callers must only reach this when the key is actually present as an *own*
+// property — an absent key means the event says nothing about pinning, which is
+// not the same as unpinned. The real inbound shape is `number | null` seconds;
+// the boolean branch is belt-and-braces for a shape rc14 does not currently
+// emit inbound (its `!!mod.pin` site builds an outbound patch), and since a
+// boolean carries no timestamp it is stamped with arrival time — which would
+// only affect ordering within the pinned block, never whether a row is pinned.
 function pinToMs(pinned: number | boolean | null | undefined): number | null {
   if (pinned === true) return Date.now();
   if (typeof pinned !== 'number') return null;

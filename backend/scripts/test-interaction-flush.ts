@@ -251,11 +251,11 @@ async function run(): Promise<void> {
   );
   pass('(e) scheduling fallback is scoped per user');
 
-  // (f) A WhatsApp pin outranks every recency signal, the pinned block is
-  //     ordered newest-pin-first (as WhatsApp orders it), and Delta — which has
-  //     no interaction and no schedule — is dragged into the list by the pin
-  //     alone. Alpha's own interaction is the newest in the set, so its
-  //     position here is decided by the pin, not by recency.
+  // (f) A WhatsApp pin outranks every recency signal and the pinned block is
+  //     ordered newest-pin-first (as WhatsApp orders it). Delta carries the
+  //     proof: with no interaction and no schedule it has no way into this list
+  //     at all except the pin, and it still lands above Bravo. Alpha leading is
+  //     *not* evidence of anything here — it tops the list under recency too.
   contactsService.recordPinStates(
     userId,
     new Map([
@@ -284,15 +284,31 @@ async function run(): Promise<void> {
   );
   pass('(g) unpin removes the row from the pinned block');
 
-  // (h) Pin state is latest-wins, NOT monotonic: a re-pin carrying a timestamp
-  //     older than both the previous pin and Delta's must still apply, and must
-  //     sort Alpha *below* Delta inside the pinned block. A max-based rule
-  //     (which is correct for last_interaction_at) would silently drop this.
+  // (h) Re-pin Alpha with a stamp *newer* than Delta's, establishing a non-null
+  //     starting value for (i). Writing onto the NULL left by (g) proves
+  //     nothing about latest-wins on its own — a monotonic rule accepts any
+  //     value over NULL — so this half only sets the trap.
+  contactsService.recordPinStates(userId, new Map([[alpha.jid, NOW - HOUR]]));
+  assert.equal(pinnedAt(alpha.id), NOW - HOUR, 'a re-pin should restore wa_pinned_at');
+  const rePinnedNewer = recentNames();
+  assert.deepEqual(
+    rePinnedNewer,
+    ['Alpha', 'Delta', 'Bravo'],
+    `Alpha's newer pin should lead the pinned block — got ${JSON.stringify(rePinnedNewer)}`,
+  );
+  pass('(h) re-pin restores the row to the pinned block, newest pin first');
+
+  // (i) Pin state is latest-wins, NOT monotonic: overwriting the NOW-HOUR pin
+  //     set in (h) with a far older stamp must move wa_pinned_at *backwards* to
+  //     exactly that value, and must sort Alpha back below Delta. A max-based
+  //     rule (which is correct for last_interaction_at) would leave both the
+  //     column and the order untouched, so this is the assertion that separates
+  //     the two.
   contactsService.recordPinStates(userId, new Map([[alpha.jid, NOW - 10 * DAY]]));
   assert.equal(
     pinnedAt(alpha.id),
     NOW - 10 * DAY,
-    'an older pin timestamp must still overwrite — pin state is not monotonic',
+    'an older pin timestamp must overwrite a newer one — pin state is not monotonic',
   );
   const repinned = recentNames();
   assert.deepEqual(
@@ -300,11 +316,12 @@ async function run(): Promise<void> {
     ['Delta', 'Alpha', 'Bravo'],
     `re-pinned Alpha should sort below the newer-pinned Delta — got ${JSON.stringify(repinned)}`,
   );
-  assert.ok(
-    pinnedAt(delta.id) === NOW - 2 * DAY,
+  assert.equal(
+    pinnedAt(delta.id),
+    NOW - 2 * DAY,
     "Delta's pin must be untouched by Alpha's update",
   );
-  pass('(h) pin state is latest-wins, not monotonic');
+  pass('(i) pin state is latest-wins, not monotonic');
 }
 
 let failure: unknown = null;
@@ -321,9 +338,9 @@ try {
 
 if (failure) {
   console.error(failure instanceof Error ? failure.message : failure);
-  console.error(`FAIL after ${passed}/8 assertions`);
+  console.error(`FAIL after ${passed}/9 assertions`);
   process.exit(1);
 }
 
-console.log(`OK ${passed}/8 assertions passed`);
+console.log(`OK ${passed}/9 assertions passed`);
 process.exit(0);

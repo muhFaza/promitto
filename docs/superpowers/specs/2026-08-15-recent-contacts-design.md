@@ -148,11 +148,15 @@ concept, the real one is mirrored.
   from WhatsApp.
 - Captured from the three **chat-shaped** events already being consumed
   (`messaging-history.set`, `chats.upsert`, `chats.update`); `messages.upsert` carries
-  no pin information. `pinned` is read with `'pinned' in c` — an absent key means the
-  event says nothing about pinning and must leave the row alone, while a present-but-
-  falsy value is a genuine unpin. rc14 emits two shapes and both are handled:
-  `proto.IConversation.pinned` is `number|null` (seconds), and one legacy path in
-  `Utils/chat-utils` sets a plain boolean, which is stamped with arrival time.
+  no pin information. `pinned` is read by own-key presence
+  (`Object.prototype.hasOwnProperty.call(c, 'pinned')`) — an absent key means the event
+  says nothing about pinning and must leave the row alone, while a present-but-falsy
+  value is a genuine unpin. `hasOwnProperty` rather than `in` because decoded
+  `proto.Conversation` instances inherit `pinned = null` from their prototype, which
+  makes `in` true for every chat in a history replay. The real inbound shape is
+  `proto.IConversation.pinned`, `number|null` in seconds; `pinToMs()` also accepts a
+  boolean (stamped with arrival time) purely defensively — rc14's boolean pin site in
+  `Utils/chat-utils` constructs an outbound patch and never reaches us.
 - Buffered in a second per-handle map, `pendingPins`, sharing the interaction buffer's
   debounce, cap, flush (`flushPendingRecency`) and teardown. It is **latest-wins, not
   max**: pin state is a fact being mirrored, and a max rule cannot express an unpin.

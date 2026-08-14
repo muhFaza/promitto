@@ -48,6 +48,14 @@ contactsRouter.get('/recent', (req, res, next) => {
   }
 });
 
+function isHttpsUrl(url: string): boolean {
+  try {
+    return new URL(url).protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
 // Registered ahead of anything matching `/:id`, though nothing here actually
 // collides: `/recent` is one segment and this is two. The redirect target is a
 // short-lived signed WhatsApp CDN URL, so it is never persisted — the manager
@@ -60,7 +68,12 @@ contactsRouter.get('/:id/avatar', async (req, res, next) => {
     const url = await sessionManager.getAvatarUrl(req.user.id, contact.jid);
     // No avatar is the ordinary case, not an error: the session may be
     // disconnected, or the contact's privacy settings hide the picture.
-    if (!url) throw errors.notFound('avatar');
+    //
+    // The target is validated before it is handed to res.redirect, even though
+    // it comes from Baileys rather than from user input: an open redirect to an
+    // arbitrary scheme is not something to be one upstream change away from.
+    // Anything that isn't a parseable https URL takes the same 404 path as null.
+    if (!url || !isHttpsUrl(url)) throw errors.notFound('avatar');
     res.redirect(302, url);
   } catch (err) {
     next(err);
@@ -115,10 +128,7 @@ contactsRouter.patch('/:id', (req, res, next) => {
   try {
     if (!req.user) throw errors.unauthorized();
     const body = UpdateBody.parse(req.body);
-    const id = req.params.id;
-    const existing = service.findById(req.user.id, id);
-    if (!existing) throw errors.notFound('contact');
-    const updated = service.rename(req.user.id, id, body.displayName);
+    const updated = service.rename(req.user.id, req.params.id, body.displayName);
     if (!updated) throw errors.notFound('contact');
     res.json(serializeContact(updated));
   } catch (err) {

@@ -10,13 +10,18 @@ type Props = {
   onSelect: (c: Contact | null) => void;
 };
 
-// First letter of the first two words. One-word names get one letter.
+// First letter of the first two words. One-word names get one letter, and a
+// name that is entirely whitespace gets none — an empty circle behind the photo
+// is fine. Array.from takes the first *code point*, not the first UTF-16 unit,
+// so a name starting outside the BMP (an emoji, say) doesn't render as half a
+// surrogate pair.
 function initials(displayName: string): string {
-  return displayName
-    .trim()
+  const trimmed = displayName.trim();
+  if (!trimmed) return '';
+  return trimmed
     .split(/\s+/)
     .slice(0, 2)
-    .map((w) => w[0] ?? '')
+    .map((w) => Array.from(w)[0] ?? '')
     .join('')
     .toUpperCase();
 }
