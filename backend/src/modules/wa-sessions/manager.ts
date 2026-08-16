@@ -107,21 +107,29 @@ type ChatLike = {
   pinned?: number | boolean | null;
   // proto.IConversation's phone-addressed twin of `id`, present on some chats
   // of a LID-migrated account. Unlike `pinned` this is read by truthiness, not
-  // key presence: protobufjs puts the default '' on the prototype, and an
-  // absent value and an empty one mean the same thing here — no PN form.
+  // key presence: protobufjs puts the default `null` on the prototype
+  // (WAProto/index.js:24067), and absent, null and empty all mean the same
+  // thing here — no PN form — so there is nothing for key presence to tell
+  // apart.
   pnJid?: string | null;
 };
 
-// A recency signal from a chat that is still LID-addressed after the
-// synchronous translation in resolvePnJid. Primitives only: the chat objects
-// and messages behind these are read and dropped in the same tick, exactly as
-// on the non-LID path, so nothing waits on the store holding a WA payload.
+// A recency signal routed through the ordering queue. Primitives only: the
+// chat objects and messages behind these are read and dropped in the same
+// tick, exactly as on the non-LID path, so nothing waits on the store holding
+// a WA payload.
 //
 // `ms` null means "this entry is not an interaction"; `pin` undefined means
 // "this entry says nothing about pinning" — the same two-level distinction the
 // synchronous path draws, carried through the queue unflattened.
-type PendingLid = {
-  lid: string;
+//
+// `resolved` marks an entry whose `jid` is already the phone form. Those are
+// queued rather than recorded inline only to hold their place in line behind
+// an untranslated entry for the same chat; the drain replays them without
+// touching the mapping store.
+type PendingRecency = {
+  jid: string;
+  resolved: boolean;
   ms: number | null;
   pin: number | null | undefined;
 };
@@ -172,13 +180,22 @@ type Handle = {
   // being mirrored, and the newest event is simply the current one. A max
   // would make an unpin unrepresentable.
   pendingPins: Map<string, number | null>;
-  // Recency signals awaiting a lid → phone translation, in arrival order.
-  // Order is load-bearing for pins: pendingPins is latest-wins, so replaying a
-  // pin and a later unpin out of order would leave the row pinned. Hence one
-  // FIFO queue drained by a single non-reentrant loop (lidResolving), rather
-  // than a fire-and-forget promise per event.
-  pendingLid: PendingLid[];
+  // Recency signals in arrival order — those awaiting a lid → phone
+  // translation, plus any already-resolved pin queued behind them to keep its
+  // place in line. Order is load-bearing for pins: pendingPins is latest-wins,
+  // so replaying a pin and a later unpin out of order would leave the row
+  // pinned. Hence one FIFO drained by a single non-reentrant loop
+  // (lidResolving), rather than a fire-and-forget promise per event.
+  pendingLid: PendingRecency[];
   lidResolving: boolean;
+  // Latched when the queue cap is hit, so an overflow logs once per episode
+  // rather than once per dropped event. Cleared when the drain catches up.
+  lidOverflowed: boolean;
+  // Set by disconnect() before it flushes the recency buffers, so a drain that
+  // wakes during `await sock.end()` — h.sock still non-null, this.stopped
+  // still false — drops its batch instead of arming a debounce timer behind
+  // the flush. Cleared by connect().
+  tearingDown: boolean;
   interactionDebounceTimer: NodeJS.Timeout | null;
   // jid → last profile-picture lookup. Only the URL string and the fetch time
   // are kept; the image itself is never proxied or buffered through this
@@ -280,6 +297,8 @@ class SessionManager {
       pendingPins: new Map(),
       pendingLid: [],
       lidResolving: false,
+      lidOverflowed: false,
+      tearingDown: false,
       interactionDebounceTimer: null,
       avatarCache: new Map(),
       intentionalClose: false,
@@ -429,6 +448,13 @@ class SessionManager {
     if (this.stopped) return;
 
     h.intentionalClose = false;
+    // Cleared here rather than in connect() because the reconnect timer and
+    // the supervisor's recovery both open sockets without going through it;
+    // leaving it latched would drop every LID-addressed recency signal for the
+    // rest of the process's life. Safe against a concurrent disconnect(): that
+    // path holds disconnectPromise, which connect() awaits before it gets
+    // here, and the supervisor only fires on sessions the DB expects up.
+    h.tearingDown = false;
     if (h.reconnectTimer) {
       clearTimeout(h.reconnectTimer);
       h.reconnectTimer = null;
@@ -533,12 +559,23 @@ class SessionManager {
         const raw = m.key?.remoteJid;
         const ms = waTsToMs(m.messageTimestamp);
         if (!raw || !ms) continue;
-        // remoteJidAlt is the decoder's PN twin of a LID-addressed chat
-        // (decode-wa-message.js:180, from the stanza's sender_pn attribute),
-        // so on this path the translation is almost always free.
-        const jid = resolvePnJid(raw, m.key?.remoteJidAlt);
-        if (isLidUser(jid)) this.queueLidEntry(h, jid, ms, undefined);
-        else this.recordInteraction(h, jid, ms);
+        // remoteJidAlt is the PN twin of the *sender*, not of the chat:
+        // extractAddressingContext derives it from `participant || from`, and
+        // decode-wa-message.js:180 puts that on the key for any non-group chat
+        // regardless of direction. On an inbound message the sender is the
+        // counterpart, so it is exactly the chat's phone form and the
+        // translation is free. On a fromMe message synced from the phone the
+        // sender is *us* while remoteJid is the counterpart's LID, so trusting
+        // it would file the interaction under our own number and lose it for
+        // the real contact. The decoder does compute the right value there
+        // (`recipientAlt`, from `recipient_pn`) but discards it, so outbound
+        // LID chats have no synchronous answer and must take the queue.
+        const jid = resolvePnJid(raw, m.key?.fromMe ? null : m.key?.remoteJidAlt);
+        if (isLidUser(jid)) {
+          this.queueRecency(h, { jid, resolved: false, ms, pin: undefined });
+        } else {
+          this.recordInteraction(h, jid, ms);
+        }
       }
     });
   }
@@ -574,26 +611,47 @@ class SessionManager {
       // (chat-utils.js:737-744), so a re-pin on a LID-migrated account can
       // only be attributed by asking the mapping store.
       if (isLidUser(jid)) {
-        if (ms !== null || pin !== undefined) this.queueLidEntry(h, jid, ms, pin);
+        if (ms !== null || pin !== undefined) {
+          this.queueRecency(h, { jid, resolved: false, ms, pin });
+        }
         continue;
       }
 
+      // Resolved, but still queued when the queue is live: pendingPins is
+      // latest-wins *by write order*, and a PN pin recorded inline would land
+      // ahead of an older LID entry for the same chat that resolves a
+      // microtask later — leaving the row in the stale state. Going through
+      // the one FIFO makes write order match event order for both spellings
+      // of the same chat.
+      if (pin !== undefined && (h.pendingLid.length > 0 || h.lidResolving)) {
+        this.queueRecency(h, { jid, resolved: true, ms, pin });
+        continue;
+      }
+
+      // Interactions keep the fast path unconditionally: recordInteraction is
+      // a high-water mark, so an out-of-order replay is a no-op rather than a
+      // wrong value.
       if (ms) this.recordInteraction(h, jid, ms);
       if (pin !== undefined) this.recordPin(h, jid, pin);
     }
   }
 
-  // Queues a signal for the async lid → phone translation. Synchronous and
+  // Queues a signal for the drain — either awaiting translation, or already
+  // resolved and queued only to keep its place in line. Synchronous and
   // allocation-light by design: this runs inside a Baileys event handler, and
   // the store lookup it feeds must not be on that handler's critical path.
-  private queueLidEntry(
-    h: Handle,
-    lid: string,
-    ms: number | null,
-    pin: number | null | undefined,
-  ): void {
-    if (h.pendingLid.length >= LID_QUEUE_MAX) return;
-    h.pendingLid.push({ lid, ms, pin });
+  private queueRecency(h: Handle, entry: PendingRecency): void {
+    if (h.pendingLid.length >= LID_QUEUE_MAX) {
+      if (!h.lidOverflowed) {
+        h.lidOverflowed = true;
+        logger.debug(
+          { userId: h.userId, cap: LID_QUEUE_MAX },
+          'lid recency queue full: dropping until it drains',
+        );
+      }
+      return;
+    }
+    h.pendingLid.push(entry);
     if (!h.lidResolving) void this.drainLidQueue(h);
   }
 
@@ -614,19 +672,23 @@ class SessionManager {
     try {
       // Re-reads the queue each pass rather than looping over one snapshot:
       // entries that arrive during the await are picked up here, which is what
-      // keeps the ordering guarantee (queueLidEntry starts no second drain
-      // while this flag is set, and the flag is cleared with no await between
-      // it and the final empty check).
+      // keeps the ordering guarantee within the queue (queueRecency starts no
+      // second drain while this flag is set, and the flag is cleared with no
+      // await between it and the final empty check).
+      //
+      // That guarantee only covers what goes *through* the queue, which is why
+      // handleChatRecency diverts resolved pins into it while it is live — a
+      // pin written inline would not be ordered against these at all.
       while (h.pendingLid.length > 0) {
         const batch = h.pendingLid;
         h.pendingLid = [];
+        h.lidOverflowed = false;
 
         // The mapping store belongs to the socket. Without one there is
-        // nothing to translate against — and since disconnect()/shutdown()
-        // null the socket only after flushing the recency buffers, this is
-        // also what stops a late drain from arming a debounce timer against a
-        // closing database.
-        if (!h.sock || this.stopped) {
+        // nothing to translate against, and tearingDown/stopped mean the
+        // recency buffers have already had their final flush — recording now
+        // would arm a debounce timer behind it, against a closing database.
+        if (!h.sock || h.tearingDown || this.stopped) {
           logger.debug(
             { userId: h.userId, dropped: batch.length },
             'lid recency dropped: no socket',
@@ -634,20 +696,26 @@ class SessionManager {
           continue;
         }
 
-        const lids = [...new Set(batch.map((e) => e.lid))];
+        const lids = [...new Set(batch.filter((e) => !e.resolved).map((e) => e.jid))];
         let pairs: Awaited<
           ReturnType<typeof h.sock.signalRepository.lidMapping.getPNsForLIDs>
         > = null;
-        try {
-          pairs = await h.sock.signalRepository.lidMapping.getPNsForLIDs(lids);
-        } catch (err) {
-          logger.debug(
-            { err, userId: h.userId, count: lids.length },
-            'lid mapping lookup failed',
-          );
+        if (lids.length > 0) {
+          try {
+            pairs = await h.sock.signalRepository.lidMapping.getPNsForLIDs(lids);
+          } catch (err) {
+            logger.debug(
+              { err, userId: h.userId, count: lids.length },
+              'lid mapping lookup failed',
+            );
+          }
         }
 
-        if (!h.sock || this.stopped) {
+        // Re-checked after the await: disconnect() sets tearingDown *before*
+        // its final flush but nulls h.sock only after `await sock.end()`, so
+        // for the length of that await the socket check alone would still pass
+        // and let this batch re-arm the debounce behind the flush.
+        if (!h.sock || h.tearingDown || this.stopped) {
           logger.debug(
             { userId: h.userId, dropped: batch.length },
             'lid recency dropped: socket closed mid-lookup',
@@ -667,7 +735,7 @@ class SessionManager {
 
         let dropped = 0;
         for (const e of batch) {
-          const jid = pn.get(e.lid);
+          const jid = e.resolved ? e.jid : pn.get(e.jid);
           if (!jid) {
             dropped++;
             continue;
@@ -1188,8 +1256,11 @@ class SessionManager {
         h.reconnectTimer = null;
       }
       // Dropped rather than resolved: translating them needs the socket we are
-      // about to close, and anything resolved after this flush would arm a new
-      // debounce timer behind it.
+      // about to close. Emptying the queue is not enough on its own — a drain
+      // already past the check above holds its batch in a local, and `await
+      // sock.end()` below gives it a chance to run — so tearingDown is what
+      // actually stops a late resolution arming a timer behind this flush.
+      h.tearingDown = true;
       h.pendingLid.length = 0;
       this.flushPendingContacts(h);
       this.flushPendingRecency(h);
@@ -1665,6 +1736,9 @@ function reconcileBackoffMs(attempts: number): number {
 // dropped just as silently as the lid it replaced.
 function resolvePnJid(raw: string, alt?: string | null): string {
   const jid = jidNormalizedUser(raw);
+  // isLidUser is `@lid` only. `@hosted.lid` (WAJIDDomains.HOSTED_LID) is
+  // knowingly out of scope: getPNsForLIDs skips it for the same reason, and
+  // this app has never seen one. Such a jid still dies at the isUserJid gate.
   if (!isLidUser(jid)) return jid;
   const altJid = alt ? jidNormalizedUser(alt) : '';
   return altJid && !isLidUser(altJid) ? altJid : jid;
