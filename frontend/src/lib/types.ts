@@ -5,6 +5,8 @@ export type UserPublic = {
   timezone: string;
   disabledAt: number | null;
   mustChangePassword: boolean;
+  retentionDays: number;
+  contactSyncEnabled: boolean;
   createdAt: number;
   updatedAt: number;
 };

@@ -18,3 +18,31 @@ export function changeTimezone(timezone: string) {
 export function listTimezones() {
   return apiRequest<{ timezones: string[] }>('/api/settings/timezones');
 }
+
+export function setRetention(retentionDays: number) {
+  return apiRequest<UserPublic>('/api/settings/retention', {
+    method: 'POST',
+    body: { retentionDays },
+  });
+}
+
+export function setContactSync(enabled: boolean) {
+  return apiRequest<UserPublic>('/api/settings/contact-sync', {
+    method: 'POST',
+    body: { enabled },
+  });
+}
+
+export function purgeData(currentPassword: string) {
+  return apiRequest<{ sentMessages: number; scheduledMessages: number }>(
+    '/api/settings/purge-data',
+    { method: 'POST', body: { currentPassword } },
+  );
+}
+
+export function deleteAccount(currentPassword: string) {
+  return apiRequest<void>('/api/settings/account', {
+    method: 'DELETE',
+    body: { currentPassword, confirm: 'DELETE' },
+  });
+}
