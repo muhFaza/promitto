@@ -26,6 +26,24 @@ function initials(displayName: string): string {
     .toUpperCase();
 }
 
+// Material Symbols `push_pin`, filled — inlined rather than pulling in an icon
+// package for one glyph. The path is drawn upright (head at the top, needle
+// straight down); WhatsApp's pinned-chat marker is that pin tilted, so the call
+// site rotates it. Upright at this size it reads as a generic marker, which is
+// why the tilt isn't decoration.
+function PinIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="currentColor"
+      aria-hidden="true"
+      className={className}
+    >
+      <path d="M16 9V4h1c.55 0 1-.45 1-1s-.45-1-1-1H7c-.55 0-1 .45-1 1s.45 1 1 1h1v5c0 1.66-1.34 3-3 3v2h5.97v7l1 1 1-1v-7H19v-2c-1.66 0-3-1.34-3-3z" />
+    </svg>
+  );
+}
+
 // The initials sit *behind* the photo rather than replacing it on error, so a
 // slow or missing avatar never flashes a broken-image glyph. The endpoint 404s
 // for no photo, privacy-blocked, and WA-disconnected alike — all silent here.
@@ -57,6 +75,9 @@ export function ContactQuickPick({ selectedJid, onSelect }: Props) {
   const recent = useContactsStore((s) => s.recent);
   const loaded = useContactsStore((s) => s.loaded);
   const load = useContactsStore((s) => s.load);
+  const hasMore = useContactsStore((s) => s.hasMore);
+  const loadingMore = useContactsStore((s) => s.loadingMore);
+  const showMore = useContactsStore((s) => s.showMore);
 
   useEffect(() => {
     if (!loaded) void load();
@@ -94,9 +115,7 @@ export function ContactQuickPick({ selectedJid, onSelect }: Props) {
                   <span className="block truncate text-sm font-medium text-ink">
                     {c.waPinnedAt !== null && (
                       <>
-                        <span aria-hidden="true" className="mr-1.5 text-accent">
-                          ▪
-                        </span>
+                        <PinIcon className="mr-1.5 inline-block h-3 w-3 -rotate-45 align-[-0.1em] text-accent" />
                         <span className="sr-only">Pinned on WhatsApp:</span>
                       </>
                     )}
@@ -111,6 +130,18 @@ export function ContactQuickPick({ selectedJid, onSelect }: Props) {
           );
         })}
       </ul>
+      {/* Below the list, continuing the hairline rhythm — the rows above just
+          keep growing down the page. */}
+      {hasMore && (
+        <button
+          type="button"
+          onClick={() => void showMore()}
+          disabled={loadingMore}
+          className="eyebrow w-full border-b border-rule/60 py-2 text-center transition-colors hover:text-ink disabled:hover:text-ink-muted"
+        >
+          {loadingMore ? 'Loading…' : 'Show more ↓'}
+        </button>
+      )}
     </div>
   );
 }
