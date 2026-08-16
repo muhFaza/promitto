@@ -115,7 +115,7 @@ export function ContactQuickPick({ selectedJid, onSelect }: Props) {
                   <span className="block truncate text-sm font-medium text-ink">
                     {c.waPinnedAt !== null && (
                       <>
-                        <PinIcon className="mr-1.5 inline-block h-3 w-3 -rotate-45 align-[-0.1em] text-accent" />
+                        <PinIcon className="mr-1.5 inline-block h-3 w-3 -rotate-45 align-[-0.1em] text-ink-muted" />
                         <span className="sr-only">Pinned on WhatsApp:</span>
                       </>
                     )}
