@@ -17,6 +17,7 @@ import { env } from '../../config/env.js';
 import { isUserJid, phoneFromJid } from '../../lib/jid.js';
 import { logger } from '../../lib/logger.js';
 import * as contactsService from '../contacts/service.js';
+import { isContactSyncEnabled } from '../users/service.js';
 import {
   getConnection,
   listRestorable,
@@ -817,11 +818,18 @@ class SessionManager {
       );
     }
 
+    // Read once per flush, not per batch, so recency and pins can't disagree
+    // about the toggle within a single drain.
+    const syncEnabled = isContactSyncEnabled(h.userId);
+
     if (h.pendingInteractions.size > 0) {
       const batch = new Map(h.pendingInteractions);
+      // Cleared whether or not we persist: the events keep arriving while sync
+      // is off, and an early return past this line grows the buffer unbounded
+      // for the life of the process.
       h.pendingInteractions.clear();
       try {
-        contactsService.recordInteractions(h.userId, batch);
+        if (syncEnabled) contactsService.recordInteractions(h.userId, batch);
       } catch (err) {
         logger.warn(
           { err, userId: h.userId, count: batch.size },
@@ -834,7 +842,7 @@ class SessionManager {
       const batch = new Map(h.pendingPins);
       h.pendingPins.clear();
       try {
-        contactsService.recordPinStates(h.userId, batch);
+        if (syncEnabled) contactsService.recordPinStates(h.userId, batch);
       } catch (err) {
         logger.warn(
           { err, userId: h.userId, count: batch.size },
@@ -891,6 +899,11 @@ class SessionManager {
 
     const entries = Array.from(h.pendingContacts.values());
     h.pendingContacts.clear();
+
+    // Gate is checked after the drain, never before it: Baileys keeps streaming
+    // contacts.upsert regardless of our setting, so returning early would leave
+    // the buffer to grow for the life of the process.
+    if (!isContactSyncEnabled(h.userId)) return;
 
     for (const e of entries) {
       try {

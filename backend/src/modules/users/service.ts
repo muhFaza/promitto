@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { env } from '../../config/env.js';
 import { db } from '../../db/client.js';
 import { users, type User } from '../../db/schema.js';
@@ -89,6 +89,42 @@ export async function setPassword(
 
 export function setTimezone(id: string, timezone: string): void {
   db.update(users).set({ timezone, updatedAt: new Date() }).where(eq(users.id, id)).run();
+}
+
+export function setRetentionDays(id: string, retentionDays: number): void {
+  db.update(users)
+    .set({ retentionDays, updatedAt: new Date() })
+    .where(eq(users.id, id))
+    .run();
+}
+
+export function setContactSyncEnabled(id: string, enabled: boolean): void {
+  db.update(users)
+    .set({ contactSyncEnabled: enabled, updatedAt: new Date() })
+    .where(eq(users.id, id))
+    .run();
+}
+
+// Read per flush rather than cached on the WA handle: better-sqlite3 is
+// synchronous and this is a single indexed lookup, and it stays correct when a
+// user flips the toggle mid-session with no cache to invalidate. A user who no
+// longer exists reads as disabled, which is the safe direction.
+export function isContactSyncEnabled(id: string): boolean {
+  const row = db
+    .select({ enabled: users.contactSyncEnabled })
+    .from(users)
+    .where(eq(users.id, id))
+    .get();
+  return row?.enabled ?? false;
+}
+
+export function countSuperusers(): number {
+  const row = db
+    .select({ n: sql<number>`count(*)` })
+    .from(users)
+    .where(eq(users.role, 'superuser'))
+    .get();
+  return row?.n ?? 0;
 }
 
 export function deleteUserById(id: string): void {
