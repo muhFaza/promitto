@@ -4,6 +4,7 @@ process.umask(0o077);
 import { env } from './config/env.js';
 import { logger } from './lib/logger.js';
 import { memoryMonitor } from './lib/memory-monitor.js';
+import { retentionSweeper } from './modules/privacy/retention.js';
 import { schedulerPoller } from './modules/scheduler/poller.js';
 import { sessionManager } from './modules/wa-sessions/manager.js';
 import { createApp } from './server.js';
@@ -45,6 +46,9 @@ void (async () => {
   // allocation storm of boot. The session count is passed as a getter to keep
   // lib/ from importing modules/ — see the note in memory-monitor.ts.
   memoryMonitor.start(() => sessionManager.getConnectedCount());
+  // Last of all: its first pass walks every user and deletes, and there is no
+  // reason for that to compete with restoring sockets.
+  retentionSweeper.start();
 })();
 
 let shuttingDown = false;
@@ -64,6 +68,11 @@ async function shutdown(signal: string, exitCode = 0): Promise<void> {
   const work = (async (): Promise<void> => {
     // First: it is pure observability, and a telemetry line emitted midway
     // through teardown would describe a process that no longer exists.
+    try {
+      await retentionSweeper.stop();
+    } catch (err) {
+      logger.error({ err }, 'retentionSweeper.stop failed');
+    }
     try {
       memoryMonitor.stop();
     } catch (err) {
