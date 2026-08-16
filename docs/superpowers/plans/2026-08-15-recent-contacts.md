@@ -1,5 +1,9 @@
 # Recent & Pinned Contacts Implementation Plan
 
+> **Superseded.** Executed, then substantially revised before merge. App-local pinning
+> (this plan's `pinned_at`, `setPinned`, `PATCH {pinned}`, Task 6) never shipped. See the
+> spec's Amendment sections for what actually landed.
+
 > **For agentic workers:** Execute your assigned task(s) only. Steps use checkbox
 > (`- [ ]`) syntax. **This repo does NOT use TDD** (owner rule) and has **no test
 > framework** — verification is `typecheck` + `lint` + the script in Task 7.

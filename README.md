@@ -2,7 +2,7 @@
 
 *I send forth, I promise.*
 
-A self-hosted WhatsApp message scheduler. Pair your number via QR, build a local contact list, and schedule one-time or recurring text messages.
+A self-hosted WhatsApp message scheduler. Pair your number via QR, build a local contact list, and schedule one-time or recurring text messages. The compose form offers a **Recent contacts** quick-pick, ranked by live WhatsApp interaction recency with your own scheduling history as a fallback, and mirroring WhatsApp's pinned chats at the top.
 
 Not a SaaS. No public signup. Accounts are provisioned by a superuser. Designed for the operator plus a handful of trusted users on a single VPS.
 
@@ -87,6 +87,8 @@ openssl rand -base64 48
 
 `SESSION_SECRET` must be at least 32 characters. **Rotating it invalidates all existing sessions**, by design.
 
+Generate a second, different value for `CSRF_SECRET` while you're there (see `.env.production.example`). It falls back to `SESSION_SECRET` when unset, so the app boots either way — setting it keeps the two HMAC purposes off one key.
+
 ### 3. Build and start
 
 `docker-compose.prod.yml` has **no `build:` key** — it references a prebuilt `promitto:deploy` image. The VPS has ~960MB of RAM and Node builds have been OOM-killed on it, so images are always built elsewhere and shipped in.
@@ -94,8 +96,9 @@ openssl rand -base64 48
 Normally CI does this for you (see [Automatic deployment](#automatic-deployment)). To do it by hand from a workstation:
 
 ```bash
-# --platform matters if you're on Apple Silicon; the VPS is x86_64
-docker buildx build --platform linux/amd64 -t promitto:deploy --load .
+# --platform matters if you're on Apple Silicon; the VPS is x86_64.
+# --provenance=false too: buildx's default attestation manifest breaks `docker load`.
+docker buildx build --platform linux/amd64 --provenance=false -t promitto:deploy --load .
 docker save promitto:deploy | gzip -1 | ssh -i ssh1.pem fazadev@<vps> 'gunzip | docker load'
 ssh -i ssh1.pem fazadev@<vps> 'cd promitto && docker compose -f docker-compose.prod.yml up -d'
 ```
@@ -106,8 +109,12 @@ Verify:
 
 ```bash
 curl https://wa.muhfaza.my.id/api/health
-# {"status":"ok","db":"ok","sessions":0}
+# {"status":"ok","db":"ok","sessions":1,
+#  "wa":{"expected":1,"connected":1,"lastCheckAt":1755400000000},
+#  "mem":{"rssMb":118.4,"heapUsedMb":61.2,"heapUsedPct":0.318}}
 ```
+
+`wa` and `mem` are spread in only when they can be computed — on an internal error they are omitted outright rather than sent as `null`. `status` reflects the **database ping alone**, deliberately: the deploy workflow greps it to decide whether to roll back, and a fresh container legitimately spends ~13s restoring sessions. Read `wa.expected` vs `wa.connected` for session health instead — a gap between them is the container-up-but-WhatsApp-dead signal.
 
 ### 4. Create the first superuser
 
@@ -153,6 +160,8 @@ Everything that matters lives in `backend/data/`: the SQLite DB and every user's
 
 **There is no automatic backup.** No cron, and the deploy workflow does not snapshot before restarting — this is a deliberate choice, not an oversight. `backup.sh` is a manual tool; run it yourself when you want a snapshot.
 
+⚠️ **Check `backend/data/` for `*.heapsnapshot` files before you archive or copy it.** Node is configured to dump a full heap (~195MB) into the bind mount when it is about to abort on the heap limit, so one appears there after a near-OOM — one per process lifetime, and nothing prunes them. A heap snapshot contains everything the process held in memory: message text, session cookies, Baileys keys. Delete it once you've analysed it, and treat any backup tarball that swallowed one as a secret, not as an archive.
+
 The consequence to keep in mind: a rollback restores the *image*, never the *schema*. If a migration turns out to be destructive or incompatible, there is nothing to restore from. That is the whole reason migrations must stay backward-compatible with the previous release.
 
 **Restore** onto a fresh VPS:
@@ -185,7 +194,7 @@ It does **not** take a backup first. See [Backup & restore](#backup--restore).
 
 Required repo secrets: `VPS_SSH_KEY` (private key with access to `fazadev@<vps>`) and `VPS_KNOWN_HOSTS` (pinned host key, so the deploy never blind-trusts a keyscan).
 
-**Each deploy restarts the container, which drops any live WhatsApp socket.** Sessions restore automatically from `backend/data/sessions/`, but a session that fails to restore needs a QR re-pair from the phone. Batch your merges accordingly.
+**Each deploy restarts the container, which drops any live WhatsApp socket** — but it does not normally cost a re-pair. The pairing lives in `backend/data/sessions/` on the bind mount and outlives the container; only the socket is disposable. Measured on a real restart: the old process closed cleanly in under a second, and the session was back **~13s** after the new container started, with no phone interaction. A QR re-pair is only needed when the restore itself fails. Batching merges is still sensible, just not urgent.
 
 ### Manual rollback
 
@@ -228,6 +237,10 @@ docker compose -f docker-compose.prod.yml exec promitto node dist/cli/reset-supe
 - Per-user IANA timezone
 - Compose-time warnings when 10+ pending messages or creating a recurring schedule
 - No hard send caps — warnings only
+- Recent contacts is a quick-pick, not a chat list — ranked by live WhatsApp interaction recency, falling back to your newest schedule per recipient so it is useful before any WA traffic accrues
+- **Pins are mirrored from WhatsApp, read-only.** No in-app pin control, and there won't be one: an app-local pin that didn't match a real WhatsApp pin would read as a bug. Pin and unpin on your phone
+- Avatars are 302 redirects to the WhatsApp CDN — never fetched or proxied through this process; no picture, a hidden picture, and a disconnected session are all a routine 404
+- Accrual caveat: WhatsApp replays chat history only at pair time, so an already-paired session builds recency and pins from live traffic onward. Pins that already existed need one unpin → re-pin on the phone before they appear
 
 ## License
 

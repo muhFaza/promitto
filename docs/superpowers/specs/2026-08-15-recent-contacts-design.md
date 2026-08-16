@@ -249,3 +249,29 @@ credentials on logout. 404 `avatar` is the no-picture answer, and it is routine.
 
 **Quick-pick is restyled from chips to rows** to carry the avatar and the phone number
 (frontend change).
+
+## Amendment (2026-08-17) — pin icon, pagination
+
+Both owner decisions, taken on the merged feature.
+
+**The `▪` marker is replaced by WhatsApp's own pin glyph.** A Material Symbols `push_pin`
+path is inlined in `ContactQuickPick.tsx` (no icon package for one glyph) and rotated
+`-45deg` at the call site: the path is drawn upright, and upright at 12px it reads as a
+generic marker rather than a pin — the tilt is what makes it WhatsApp's. It renders in
+`text-ink-muted`, **not** the accent olive the original spec called for. Owner call: a
+mirrored pin is a neutral marker, and accent is reserved for live/success status. The
+`sr-only` "Pinned on WhatsApp:" prefix carries the meaning for screen readers.
+
+**The list pages instead of showing one fixed page.** Six rows initially, +6 per press of
+"Show more ↓", ceiling `RECENT_MAX = 48` (the endpoint itself rejects `limit > 50`). Each
+press refetches at the larger limit rather than appending — `listRecent` is one bounded
+query and the ordering can change between presses, so a re-read is both simpler and more
+correct than stitching pages. `hasMore` is a **heuristic**: the endpoint returns rows and
+no total, so `returned === limit` (below the ceiling) is the only "more exist" signal
+available, and it can be one press late when the count lands exactly on a page boundary.
+Accepted. `limit` lives in the store so an expanded list survives the refetch after a send;
+`reset()` restores 6.
+
+**No internal scroll container** (owner decision). The rows simply grow down the page, and
+"Show more ↓" sits below them continuing the hairline rhythm. A nested scroll region inside
+a compose form is worse than a longer page.
