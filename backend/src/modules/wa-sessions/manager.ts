@@ -81,6 +81,30 @@ const baileysLogger = pino({
 
 type PendingContact = { jid: string; displayName: string; phone: string };
 
+// Baileys hands timestamps over as seconds, typed `number | Long | null`. Long
+// is matched structurally rather than imported — it is a transitive dep, not
+// part of baileys' own export surface.
+type WaTimestamp = number | { toString(): string } | null | undefined;
+
+// The shape shared by `Chat`, `ChatUpdate` and the chats carried on
+// `messaging-history.set`; only the recency and pin fields are of interest.
+//
+// Inbound, `pinned` is always `number | null` in rc14 — a pin timestamp in
+// seconds, which is what app-state pin actions produce and what the only
+// inbound emit path normalizes to. The `boolean` in the type (and the matching
+// branch in pinToMs) is defensive only: rc14's boolean pin site,
+// Utils/chat-utils.js:491, builds an *outbound* patch and is never emitted back
+// to us. The distinction that actually matters is *present and falsy* (an
+// unpin) versus *absent* (this event says nothing about pinning) — which is why
+// the field is optional and read by key presence, never truthiness.
+type ChatLike = {
+  id?: string | null;
+  conversationTimestamp?: WaTimestamp;
+  lastMessageRecvTimestamp?: WaTimestamp;
+  timestamp?: WaTimestamp;
+  pinned?: number | boolean | null;
+};
+
 type Handle = {
   userId: string;
   sock: WASocket | null;
@@ -118,12 +142,44 @@ type Handle = {
   openPromise: Promise<void> | null;
   syncDebounceTimer: NodeJS.Timeout | null;
   pendingContacts: Map<string, PendingContact>;
+  // jid → newest interaction seen, epoch ms. Nothing else from the WA payloads
+  // is retained: message bodies and chat objects are read and dropped in the
+  // same tick.
+  pendingInteractions: Map<string, number>;
+  // jid → WhatsApp's pin timestamp (epoch ms), or null for an unpin. Unlike
+  // pendingInteractions this is LATEST-WINS, not max: pin state is a fact
+  // being mirrored, and the newest event is simply the current one. A max
+  // would make an unpin unrepresentable.
+  pendingPins: Map<string, number | null>;
+  interactionDebounceTimer: NodeJS.Timeout | null;
+  // jid → last profile-picture lookup. Only the URL string and the fetch time
+  // are kept; the image itself is never proxied or buffered through this
+  // process. Cleared with the credentials, since a new pairing may see a
+  // different set of pictures.
+  avatarCache: Map<string, AvatarCacheEntry>;
   intentionalClose: boolean;
 };
+
+type AvatarCacheEntry = { url: string | null; at: number };
 
 const CONNECT_SETTLE_TIMEOUT_MS = 15_000;
 const CONTACT_SYNC_DEBOUNCE_MS = 2_000;
 const CONTACT_SYNC_MAX_BUFFER = 200;
+const AVATAR_TIMEOUT_MS = 5_000;
+// Baileys applies AVATAR_TIMEOUT_MS to the IQ round trip only; the awaits ahead
+// of it (tc-token fetch, LID resolution) are unbounded, so the call as a whole
+// has no ceiling without this outer one.
+const AVATAR_CALL_TIMEOUT_MS = 7_000;
+// Bounded in practice by the user's contact count, which is small. This is a
+// backstop against an unforeseen jid firehose on a 195MB heap, not a working
+// eviction policy — hence clear-all rather than LRU.
+const AVATAR_CACHE_MAX = 1_000;
+// A picture that exists changes rarely, so it is cached for the day's work. A
+// miss — disconnected session, privacy-blocked contact, no picture set — is
+// cached far shorter but still cached: without it every dashboard render would
+// pay a round trip per row to learn the same nothing.
+const AVATAR_TTL_MS = 6 * 60 * 60 * 1_000;
+const AVATAR_MISS_TTL_MS = 10 * 60 * 1_000;
 
 let cachedWaVersion: [number, number, number] | null = null;
 let versionFetchPromise: Promise<[number, number, number] | null> | null = null;
@@ -187,6 +243,10 @@ class SessionManager {
       openPromise: null,
       syncDebounceTimer: null,
       pendingContacts: new Map(),
+      pendingInteractions: new Map(),
+      pendingPins: new Map(),
+      interactionDebounceTimer: null,
+      avatarCache: new Map(),
       intentionalClose: false,
     };
     h.events.setMaxListeners(32);
@@ -415,6 +475,131 @@ class SessionManager {
     sock.ev.on('contacts.update', (cs) => {
       this.handleContactsSync(h.userId, cs);
     });
+
+    // Recency signals. Chat events only arrive on a (re-)pair's history
+    // replay; messages.upsert is what actually accrues on a session that is
+    // already paired — and it fires for fromMe too, so the scheduler's own
+    // sends count as interaction.
+    sock.ev.on('messaging-history.set', ({ chats }) => {
+      // A payload without `chats` must not throw inside an event handler.
+      this.handleChatRecency(h, chats ?? []);
+    });
+
+    sock.ev.on('chats.upsert', (cs) => {
+      this.handleChatRecency(h, cs);
+    });
+
+    sock.ev.on('chats.update', (cs) => {
+      this.handleChatRecency(h, cs);
+    });
+
+    sock.ev.on('messages.upsert', ({ messages }) => {
+      for (const m of messages) {
+        const jid = m.key?.remoteJid;
+        const ms = waTsToMs(m.messageTimestamp);
+        if (jid && ms) this.recordInteraction(h, jid, ms);
+      }
+    });
+  }
+
+  private handleChatRecency(h: Handle, cs: ReadonlyArray<ChatLike>): void {
+    for (const c of cs) {
+      if (!c.id) continue;
+      const ms =
+        waTsToMs(c.conversationTimestamp) ??
+        waTsToMs(c.lastMessageRecvTimestamp) ??
+        waTsToMs(c.timestamp);
+      if (ms) this.recordInteraction(h, c.id, ms);
+
+      // Presence of the key — not truthiness, not `!= null` — is the test: an
+      // unpin arrives as `pinned: null`, while a chat event that isn't about
+      // pinning omits it entirely, and collapsing those two would make every
+      // unrelated chats.update silently unpin the row.
+      //
+      // hasOwnProperty rather than `in`, and the distinction is load-bearing:
+      // chats decoded from protobuf (`messaging-history.set`, and the buffered
+      // `chats.upsert` that carries decoded conversations) are proto.Conversation
+      // instances whose *prototype* defines `pinned = null`, so `'pinned' in c`
+      // is true for every one of them and a history sync would mass-unpin the
+      // whole contact list. A real pin — decode-assigned, a chats.update literal,
+      // or a value merged in by the event buffer's Object.assign — is always an
+      // own property.
+      if (Object.prototype.hasOwnProperty.call(c, 'pinned')) {
+        this.recordPin(h, c.id, pinToMs(c.pinned));
+      }
+    }
+  }
+
+  // Same buffering deal as handleContactsSync: a quiet window, plus a hard cap
+  // so a history replay that never pauses for 2s can't starve the flush.
+  private recordInteraction(h: Handle, jid: string, ms: number): void {
+    if (!isUserJid(jid)) return;
+
+    const existing = h.pendingInteractions.get(jid);
+    if (existing !== undefined && existing >= ms) return;
+    h.pendingInteractions.set(jid, ms);
+
+    this.armRecencyFlush(h);
+  }
+
+  // Latest-wins, deliberately unlike recordInteraction: this mirrors a state,
+  // not a high-water mark, so the newest event always overwrites — including
+  // an unpin (null), which no max-based rule could express.
+  private recordPin(h: Handle, jid: string, at: number | null): void {
+    if (!isUserJid(jid)) return;
+    h.pendingPins.set(jid, at);
+    this.armRecencyFlush(h);
+  }
+
+  private armRecencyFlush(h: Handle): void {
+    if (
+      h.pendingInteractions.size >= CONTACT_SYNC_MAX_BUFFER ||
+      h.pendingPins.size >= CONTACT_SYNC_MAX_BUFFER
+    ) {
+      this.flushPendingRecency(h);
+      return;
+    }
+
+    if (h.interactionDebounceTimer) clearTimeout(h.interactionDebounceTimer);
+    h.interactionDebounceTimer = setTimeout(() => {
+      this.flushPendingRecency(h);
+    }, CONTACT_SYNC_DEBOUNCE_MS);
+  }
+
+  // Both buffers drain together: they are fed by the same events and share one
+  // timer, so flushing them separately would only create a window where a
+  // chat's pin state and its recency disagree.
+  private flushPendingRecency(h: Handle): void {
+    if (h.interactionDebounceTimer) {
+      clearTimeout(h.interactionDebounceTimer);
+      h.interactionDebounceTimer = null;
+    }
+
+    if (h.pendingInteractions.size > 0) {
+      const batch = new Map(h.pendingInteractions);
+      h.pendingInteractions.clear();
+      try {
+        contactsService.recordInteractions(h.userId, batch);
+      } catch (err) {
+        logger.warn(
+          { err, userId: h.userId, count: batch.size },
+          'recordInteractions flush failed',
+        );
+      }
+    }
+
+    if (h.pendingPins.size > 0) {
+      const batch = new Map(h.pendingPins);
+      h.pendingPins.clear();
+      try {
+        contactsService.recordPinStates(h.userId, batch);
+      } catch (err) {
+        logger.warn(
+          { err, userId: h.userId, count: batch.size },
+          'recordPinStates flush failed',
+        );
+      }
+    }
   }
 
   // Baileys emits contacts.upsert/update opportunistically with no "sync done"
@@ -541,6 +726,68 @@ class SessionManager {
     }
   }
 
+  // Resolves a contact's profile picture to a WhatsApp CDN URL for the caller to
+  // redirect to; never fetches or proxies the image itself. 'preview' is the
+  // small variant, which is all a 36px avatar needs.
+  //
+  // Returns null rather than throwing on every failure path — an avatar is
+  // decoration, and a disconnected session is the common case, not an error.
+  async getAvatarUrl(userId: string, jid: string): Promise<string | null> {
+    const h = this.handles.get(userId);
+    if (!h) return null;
+
+    const now = Date.now();
+    const cached = h.avatarCache.get(jid);
+    if (cached && now - cached.at < (cached.url ? AVATAR_TTL_MS : AVATAR_MISS_TTL_MS)) {
+      return cached.url;
+    }
+
+    // Cached as a miss, not skipped: otherwise a disconnected session makes
+    // every row on every dashboard visit re-enter this path.
+    if (!h.sock || h.status !== 'connected') {
+      this.cacheAvatar(h, jid, null);
+      return null;
+    }
+
+    const sock = h.sock;
+    // The inner timeout only bounds the IQ; the race bounds the whole call,
+    // including the pre-query awaits. The loser is left to settle on its own —
+    // hence the attached catch, without which a late rejection would be
+    // unhandled and the process-level fatal handler in main.ts would take the
+    // process down over a decoration.
+    const query = sock
+      .profilePictureUrl(jid, 'preview', AVATAR_TIMEOUT_MS)
+      .then((url) => url ?? null);
+    query.catch(() => {});
+
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      const resolved = await Promise.race<string | null>([
+        query,
+        new Promise<null>((resolve) => {
+          timer = setTimeout(() => {
+            resolve(null);
+          }, AVATAR_CALL_TIMEOUT_MS);
+        }),
+      ]);
+      this.cacheAvatar(h, jid, resolved);
+      return resolved;
+    } catch (err) {
+      // 404 (no picture) and 401 (hidden by privacy settings) both land here and
+      // are entirely routine, so this stays at debug.
+      logger.debug({ err, userId, jid }, 'profilePictureUrl failed');
+      this.cacheAvatar(h, jid, null);
+      return null;
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
+  private cacheAvatar(h: Handle, jid: string, url: string | null): void {
+    if (h.avatarCache.size >= AVATAR_CACHE_MAX) h.avatarCache.clear();
+    h.avatarCache.set(jid, { url, at: Date.now() });
+  }
+
   // Every status write in here goes through trySetStatus. This whole function
   // runs inside Baileys' ev.emit, so a synchronous SQLITE_BUSY would propagate
   // into the socket's message processing — and with the process-level fatal
@@ -636,6 +883,7 @@ class SessionManager {
 
       if (isLoggedOut) {
         void this.wipeAuthState(h.authStatePath);
+        h.avatarCache.clear();
         h.latestQr = null;
         this.trySetStatus(h, 'logged_out', {
           error: 'Logged out from phone',
@@ -766,6 +1014,7 @@ class SessionManager {
         h.reconnectTimer = null;
       }
       this.flushPendingContacts(h);
+      this.flushPendingRecency(h);
 
       if (h.sock) {
         try {
@@ -782,6 +1031,7 @@ class SessionManager {
 
       if (opts.logout) {
         await this.wipeAuthState(h.authStatePath);
+        h.avatarCache.clear();
         h.latestQr = null;
         this.setStatus(h, 'logged_out', { error: null, jid: null });
       } else {
@@ -1051,7 +1301,12 @@ class SessionManager {
         clearTimeout(h.syncDebounceTimer);
         h.syncDebounceTimer = null;
       }
+      if (h.interactionDebounceTimer) {
+        clearTimeout(h.interactionDebounceTimer);
+        h.interactionDebounceTimer = null;
+      }
       this.flushPendingContacts(h);
+      this.flushPendingRecency(h);
       if (h.sock) {
         try {
           await h.sock.end(undefined);
@@ -1216,6 +1471,30 @@ function reconcileBackoffMs(attempts: number): number {
     RECONCILE_BASE_BACKOFF_MS * 2 ** Math.max(0, attempts - 1),
   );
   return base + Math.floor(Math.random() * base * 0.2);
+}
+
+// WA timestamps are seconds; anything already past 1e12 is milliseconds and is
+// passed through, which keeps a future protocol change from inflating a date
+// into the year 33000.
+function waTsToMs(ts: WaTimestamp): number | null {
+  if (ts == null) return null;
+  const n = typeof ts === 'number' ? ts : Number(ts.toString());
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return n < 1e12 ? Math.round(n * 1000) : Math.round(n);
+}
+
+// The pin field, normalized to "pinned at this instant" or "not pinned".
+// Callers must only reach this when the key is actually present as an *own*
+// property — an absent key means the event says nothing about pinning, which is
+// not the same as unpinned. The real inbound shape is `number | null` seconds;
+// the boolean branch is belt-and-braces for a shape rc14 does not currently
+// emit inbound (its `!!mod.pin` site builds an outbound patch), and since a
+// boolean carries no timestamp it is stamped with arrival time — which would
+// only affect ordering within the pinned block, never whether a row is pinned.
+function pinToMs(pinned: number | boolean | null | undefined): number | null {
+  if (pinned === true) return Date.now();
+  if (typeof pinned !== 'number') return null;
+  return waTsToMs(pinned);
 }
 
 function toMessage(err: unknown): string {

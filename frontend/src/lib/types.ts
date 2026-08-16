@@ -16,6 +16,10 @@ export type Contact = {
   phone: string;
   source: 'synced' | 'manual';
   verifiedOnWhatsapp: boolean | null;
+  // Read-only mirror of the chat's pin state on WhatsApp itself. Nothing in the
+  // app sets it; the server just sorts pinned rows first in /recent.
+  waPinnedAt: number | null;
+  lastInteractionAt: number | null;
   createdAt: number;
   updatedAt: number;
 };

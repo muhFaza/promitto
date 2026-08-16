@@ -9,6 +9,11 @@ export function list(params: { search?: string; limit?: number } = {}) {
   return apiRequest<{ contacts: Contact[] }>(`/api/contacts${suffix}`);
 }
 
+export function recent(limit?: number) {
+  const suffix = limit ? `?limit=${limit}` : '';
+  return apiRequest<{ contacts: Contact[] }>(`/api/contacts/recent${suffix}`);
+}
+
 export function create(input: { phone: string; displayName: string }) {
   return apiRequest<Contact>('/api/contacts', { method: 'POST', body: input });
 }

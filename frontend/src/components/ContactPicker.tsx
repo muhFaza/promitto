@@ -9,6 +9,20 @@ type Props = {
   placeholder?: string;
 };
 
+// Empty search box: offer the recent list rather than a blind
+// alphabetical slice. Falls back to the alphabetical list when the user has
+// no interaction history yet (and when /recent is unavailable).
+async function fetchOptions(search: string): Promise<Contact[]> {
+  if (search) {
+    const r = await contactsApi.list({ search, limit: 20 });
+    return r.contacts;
+  }
+  const recent = await contactsApi.recent(20).catch(() => null);
+  if (recent && recent.contacts.length > 0) return recent.contacts;
+  const r = await contactsApi.list({ limit: 20 });
+  return r.contacts;
+}
+
 export function ContactPicker({
   value,
   onChange,
@@ -19,6 +33,9 @@ export function ContactPicker({
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // The empty-search branch chains up to two requests (recent → list fallback),
+  // so a stale response can outlive a newer one. Only the latest query wins.
+  const seqRef = useRef(0);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const listId = useId();
@@ -45,12 +62,18 @@ export function ContactPicker({
   function query(v: string) {
     if (debounceRef.current) clearTimeout(debounceRef.current);
     debounceRef.current = setTimeout(() => {
+      const seq = ++seqRef.current;
       setLoading(true);
-      contactsApi
-        .list(v ? { search: v, limit: 20 } : { limit: 20 })
-        .then((r) => setOptions(r.contacts))
-        .catch(() => setOptions([]))
-        .finally(() => setLoading(false));
+      fetchOptions(v)
+        .then((contacts) => {
+          if (seq === seqRef.current) setOptions(contacts);
+        })
+        .catch(() => {
+          if (seq === seqRef.current) setOptions([]);
+        })
+        .finally(() => {
+          if (seq === seqRef.current) setLoading(false);
+        });
     }, 200);
   }
 

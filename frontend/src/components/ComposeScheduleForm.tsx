@@ -13,8 +13,10 @@ import {
 } from '../lib/dates';
 import type { Contact } from '../lib/types';
 import { useAuthStore } from '../stores/auth';
+import { useContactsStore } from '../stores/contacts';
 import { useUiStore } from '../stores/ui';
 import { ContactPicker } from './ContactPicker';
+import { ContactQuickPick } from './ContactQuickPick';
 import { Button } from './ui/Button';
 import { Field } from './ui/Field';
 import { Input } from './ui/Input';
@@ -146,6 +148,8 @@ export function ComposeScheduleForm({ onCreated }: Props) {
       }
       resetForm();
       refreshStats();
+      // The scheduling-history fallback ranking just changed.
+      void useContactsStore.getState().load();
       onCreated?.();
     } catch (err) {
       pushToast({
@@ -179,9 +183,17 @@ export function ComposeScheduleForm({ onCreated }: Props) {
       )}
 
       <form onSubmit={handleSubmit} className="space-y-6">
-        <Field label="To — recipient" hint="One contact per promise.">
-          <ContactPicker value={recipient} onChange={setRecipient} />
-        </Field>
+        <div className="space-y-3">
+          {/* Outside the Field: its <label> may only wrap phrasing content,
+              and the recent-contacts list is a <ul> of buttons. */}
+          <ContactQuickPick
+            selectedJid={recipient?.jid ?? null}
+            onSelect={setRecipient}
+          />
+          <Field label="To — recipient" hint="One contact per promise.">
+            <ContactPicker value={recipient} onChange={setRecipient} />
+          </Field>
+        </div>
 
         <Field
           label="Message"

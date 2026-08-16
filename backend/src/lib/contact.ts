@@ -7,6 +7,8 @@ export type ContactPublic = {
   phone: string;
   source: 'synced' | 'manual';
   verifiedOnWhatsapp: boolean | null;
+  lastInteractionAt: number | null;
+  waPinnedAt: number | null;
   createdAt: number;
   updatedAt: number;
 };
@@ -19,6 +21,8 @@ export function serializeContact(c: Contact): ContactPublic {
     phone: c.phone,
     source: c.source,
     verifiedOnWhatsapp: c.verifiedOnWhatsapp,
+    lastInteractionAt: c.lastInteractionAt?.getTime() ?? null,
+    waPinnedAt: c.waPinnedAt?.getTime() ?? null,
     createdAt: c.createdAt.getTime(),
     updatedAt: c.updatedAt.getTime(),
   };
