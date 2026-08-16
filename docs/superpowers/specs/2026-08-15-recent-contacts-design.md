@@ -172,6 +172,64 @@ appear until each is unpinned and re-pinned on the phone. Future pin/unpin actio
 arrive live. This is the same shape as the interaction-recency caveat in decision 1, and
 there is no fallback for it — an empty pinned block is the expected initial state.
 
+## Amendment (2026-08-17) — LID addressing
+
+Shipped as a bugfix against the merged feature. On the production account the pinned
+block stayed empty past the accrual caveat above: a real re-pin still never reached
+`wa_pinned_at`.
+
+The account is **LID-migrated** (~9k `lid-mapping` entries in its auth state), so
+WhatsApp addresses many chats as `<n>@lid` rather than `<phone>@s.whatsapp.net`. Both
+capture paths applied `isUserJid()` — which only accepts the phone form — *before* any
+translation, so every LID-addressed event was silently discarded. Pins were hit hardest:
+the pin sync emits a bare `{ id, pinned, conditional }` (`chat-utils.js:737-744`) with no
+phone form attached, so there was nothing to fall back to.
+
+- Every jid on the recency/pin path is now normalized to its phone form **before** the
+  `isUserJid()` gate, which stays as the final gate. Synchronous where the event carries
+  a phone twin — `key.remoteJidAlt` on messages and `proto.IConversation.pnJid` on chats,
+  the latter read by truthiness since protobufjs's prototype default is `null`
+  (`WAProto/index.js:24067`) and absent/null/empty all mean "no PN form".
+- **`remoteJidAlt` is only trusted on inbound messages.** It is the PN twin of the
+  *sender*, not of the chat: `extractAddressingContext` derives it from
+  `participant || from`, and `decode-wa-message.js:180` attaches it to the key for any
+  non-group chat regardless of direction. Inbound, the sender *is* the counterpart, so it
+  is exactly right. On a `fromMe` message synced from the phone the sender is us while
+  `remoteJid` is the counterpart's LID — trusting it there would file the interaction
+  under the user's own number and lose it for the real contact. The decoder computes the
+  correct value for that case (`recipientAlt`, from `recipient_pn`) but discards it, so
+  outbound LID chats have no synchronous answer and take the queue.
+- Otherwise the handler extracts primitives only — `{ lid, ms, pin }`, no chat or message
+  object retained — onto a per-handle FIFO, drained by
+  `signalRepository.lidMapping.getPNsForLIDs()` (a local auth-state read, not a network
+  call) and replayed into the same `pendingInteractions` / `pendingPins` buffers.
+- One queue with a single non-reentrant drain, not a promise per event: `pendingPins` is
+  latest-wins, so out-of-order resolution could replay a pin *after* the unpin that
+  followed it and leave the row pinned. That ordering only covers what goes *through* the
+  queue, so an already-resolved **pin** is also queued (flagged `resolved`, so the drain
+  skips the store lookup for it) whenever the queue is non-empty or draining — otherwise
+  a PN-addressed pin written inline would land ahead of an older LID entry for the same
+  chat resolving a microtask later. Interactions keep the inline fast path: they are a
+  high-water mark, so an out-of-order replay is a no-op rather than a wrong value.
+- `getPNsForLIDs` answers `<user>:<device>@s.whatsapp.net`; the device suffix is stripped
+  with `jidNormalizedUser` or the result would fail `isUserJid` for the same reason the
+  lid did.
+- No local lid→pn cache. `LIDMappingStore` already fronts the auth state with an LRU
+  (3-day TTL, `updateAgeOnGet`) and coalesces concurrent lookups; a second cache would
+  cost heap on a 195MB budget and could outlive a re-pair that changed the mapping.
+- The drain drops its batch if the socket is gone, the manager is stopping, or the handle
+  is tearing down, so a late resolution cannot arm a debounce timer behind
+  `flushPendingRecency()` at teardown. The `tearingDown` flag is needed on top of the
+  socket check because `disconnect()` nulls `h.sock` only *after* `await sock.end()` — a
+  drain waking inside that await would otherwise pass the check and write behind the
+  final flush. It is cleared in `runOpenSocket`, the one choke point every open path
+  shares (the reconnect timer and the supervisor both bypass `connect()`).
+- Hosted-LID (`@hosted.lid`) is knowingly out of scope: `isLidUser` does not match it and
+  `getPNsForLIDs` skips it, so such a jid still dies at the gate.
+
+The `contacts.upsert`/`update` path needed no change: it already prefers `c.phoneNumber`
+over `c.id`, which is the phone form for a LID contact.
+
 Migration 0006 was regenerated rather than amended (twice — once to drop `pinned_at`,
 once to add `wa_pinned_at`), so the branch still ships exactly one migration. It now
 emits `last_interaction_at` + `wa_pinned_at` + `contacts_user_recent_idx (user_id,
