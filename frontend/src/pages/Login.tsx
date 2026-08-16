@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent } from 'react';
-import { useLocation, useNavigate } from 'react-router-dom';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { ApiError } from '../api/client';
 import { Button } from '../components/ui/Button';
 import { Field } from '../components/ui/Field';
@@ -111,6 +111,12 @@ export function Login() {
 
         <div className="mt-8 text-center">
           <div className="eyebrow">one vps · one container · no saas</div>
+          <Link
+            className="mt-3 inline-block text-[12px] text-ink-muted underline underline-offset-4 hover:text-ink"
+            to="/privacy"
+          >
+            What this server stores about you
+          </Link>
         </div>
       </div>
     </div>

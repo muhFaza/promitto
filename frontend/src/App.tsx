@@ -5,6 +5,7 @@ import { Admin } from './pages/Admin';
 import { Contacts } from './pages/Contacts';
 import { Dashboard } from './pages/Dashboard';
 import { Login } from './pages/Login';
+import { Privacy } from './pages/Privacy';
 import { Schedule } from './pages/Schedule';
 import { Settings } from './pages/Settings';
 import { WhatsApp } from './pages/WhatsApp';
@@ -63,6 +64,7 @@ export function App() {
             </RequireAuth>
           }
         />
+        <Route path="/privacy" element={<Privacy />} />
         <Route path="*" element={<Navigate to="/app" replace />} />
       </Routes>
       <ToastContainer />
