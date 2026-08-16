@@ -19,6 +19,10 @@ export const users = sqliteTable('users', {
   mustChangePassword: integer('must_change_password', { mode: 'boolean' })
     .notNull()
     .default(false),
+  retentionDays: integer('retention_days').notNull().default(60),
+  contactSyncEnabled: integer('contact_sync_enabled', { mode: 'boolean' })
+    .notNull()
+    .default(true),
   createdAt: integer('created_at', { mode: 'timestamp_ms' })
     .notNull()
     .default(sql`(unixepoch() * 1000)`),

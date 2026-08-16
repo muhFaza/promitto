@@ -10,6 +10,7 @@ import { sqlite } from '../../db/client.js';
 import { signSessionId } from '../../lib/cookie-signer.js';
 import { setCsrfCookie } from '../../lib/csrf.js';
 import { errors } from '../../lib/errors.js';
+import { anonymizeIp } from '../../lib/ip.js';
 import { verifyPassword } from '../../lib/password.js';
 import { serializeUser } from '../../lib/user.js';
 import { requireAuth } from '../../middleware/auth.js';
@@ -69,7 +70,7 @@ authRouter.post('/login', async (req, res, next) => {
       return createSession({
         userId: user.id,
         userAgent: req.headers['user-agent'] ?? null,
-        ip: req.ip ?? null,
+        ip: anonymizeIp(req.ip),
       });
     }).immediate();
 
