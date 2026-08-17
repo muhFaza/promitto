@@ -7,6 +7,11 @@ import { logger } from '../../lib/logger.js';
 const SWEEP_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const DAY_MS = 86_400_000;
 
+// The same set the settings route accepts. Duplicated here on purpose: the
+// column has no CHECK constraint, so a row written by an older release, a hand
+// edit, or a future bug is the case this guards against — not the HTTP path.
+const ALLOWED_RETENTION_DAYS: ReadonlySet<number> = new Set([7, 30, 60, 90, 180]);
+
 export type SweepCounts = { sentMessages: number; scheduledMessages: number };
 
 /**
@@ -25,12 +30,22 @@ export type SweepCounts = { sentMessages: number; scheduledMessages: number };
  * observed before it is trusted, but a caller that passes `{ dryRun: false }`
  * always deletes for real — a user asking for their data to be gone must never
  * silently no-op because an operator flag is set.
+ *
+ * `retentionDays` is validated here and not only at the HTTP edge: a negative
+ * or NaN value future-dates the cutoff, and since NaN comparisons and a
+ * far-future cutoff both resolve to "everything is expired", the failure mode
+ * of a bad number is deleting a user's entire history. There are no backups.
  */
 export function sweepUser(
   userId: string,
   retentionDays: number,
   opts: { now?: number; dryRun?: boolean } = {},
 ): SweepCounts {
+  if (!Number.isInteger(retentionDays) || retentionDays < 0) {
+    throw new Error(
+      `sweepUser: retentionDays must be a non-negative integer, got ${String(retentionDays)}`,
+    );
+  }
   const now = opts.now ?? Date.now();
   const dryRun = opts.dryRun ?? env.RETENTION_DRY_RUN;
   const cutoff = new Date(now - retentionDays * DAY_MS);
@@ -112,6 +127,16 @@ class RetentionSweeper {
       let scheduled = 0;
       for (const row of rows) {
         if (this.stopped) break;
+        // Skip rather than sweep with a value we don't recognise. The periodic
+        // sweep is unattended and deletes for real; a garbage retention_days is
+        // a reason to leave that user's data alone and complain, not to guess.
+        if (!ALLOWED_RETENTION_DAYS.has(row.retentionDays)) {
+          logger.warn(
+            { userId: row.id, retentionDays: row.retentionDays },
+            'skipping retention sweep: retention_days is not an allowed value',
+          );
+          continue;
+        }
         try {
           const counts = sweepUser(row.id, row.retentionDays);
           sent += counts.sentMessages;

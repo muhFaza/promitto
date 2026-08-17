@@ -298,7 +298,69 @@ function run(): void {
   );
   assert.equal(schedExists(SCHED_ACTIVE_ONCE_OLD), true, 'the active row still survives a real purge');
   pass('(9) explicit dryRun:false overrides RETENTION_DRY_RUN=true');
+
+  // ---- Phase D: the argument guard. --------------------------------------
+  // A negative or non-finite retentionDays future-dates the cutoff, and a
+  // future cutoff means "everything has expired" — the whole history, silently,
+  // with no backups to restore from. The HTTP route validates, but sweepUser is
+  // exported and destructive, so it validates for itself.
+  reseedMessages();
+  const before10 = countFor(userId);
+  for (const bad of [-1, Number.NaN, 1.5, Number.POSITIVE_INFINITY, -0.0001]) {
+    assert.throws(
+      () => sweepUser(userId, bad, { now: NOW, dryRun: false }),
+      /non-negative integer/,
+      `sweepUser must refuse retentionDays=${String(bad)}`,
+    );
+  }
+  assert.deepEqual(
+    countFor(userId),
+    before10,
+    'a refused sweep must not have deleted anything',
+  );
+  pass('(10) sweepUser throws on a negative, NaN or fractional retentionDays');
+
+  // (11) Zero is legal and is the one value that means "delete everything that
+  //      has already happened" — the guard must not reject it, because the
+  //      user-initiated purge passes exactly this.
+  reseedMessages();
+  const e = sweepUser(userId, 0, { now: NOW, dryRun: false });
+  assert.equal(sentExists(SENT_OLD), false, 'retention 0 must delete the oldest sent row');
+  assert.equal(sentExists(SENT_MID), false, 'retention 0 must delete the mid sent row');
+  assert.equal(sentExists(SENT_NEW), false, 'retention 0 must delete even a 1-day-old sent row');
+  assert.equal(e.sentMessages, 3, `retention 0 should delete all 3 sent rows — got ${e.sentMessages}`);
+  assert.equal(
+    schedExists(SCHED_DONE_ONCE_OLD),
+    false,
+    'retention 0 must delete a finished one-off',
+  );
+  assert.equal(
+    schedExists(SCHED_DONE_ONCE_NEW),
+    false,
+    'retention 0 must delete a recent finished one-off',
+  );
+  assert.equal(
+    e.scheduledMessages,
+    2,
+    `retention 0 should delete both finished one-offs — got ${e.scheduledMessages}`,
+  );
+  // Even a full purge leaves live configuration alone: the predicate, not the
+  // cutoff, is what protects these.
+  assert.equal(schedExists(SCHED_ACTIVE_ONCE_OLD), true, 'retention 0 must not cancel an active schedule');
+  assert.equal(
+    schedExists(SCHED_DONE_RECURRING_OLD),
+    true,
+    'retention 0 must not delete a recurring schedule',
+  );
+  assert.deepEqual(
+    countFor(otherUserId),
+    { sent: 1, sched: 1 },
+    "retention 0 must stay scoped to one user",
+  );
+  pass('(11) retentionDays 0 deletes everything already past and nothing live');
 }
+
+const TOTAL = 11;
 
 let failure: unknown = null;
 try {
@@ -314,9 +376,9 @@ try {
 
 if (failure) {
   console.error(failure instanceof Error ? failure.message : failure);
-  console.error(`FAIL after ${passed}/9 assertions`);
+  console.error(`FAIL after ${passed}/${TOTAL} assertions`);
   process.exit(1);
 }
 
-console.log(`OK ${passed}/9 assertions passed`);
+console.log(`OK ${passed}/${TOTAL} assertions passed`);
 process.exit(0);

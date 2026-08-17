@@ -1,8 +1,5 @@
-import { promises as fs } from 'node:fs';
-import path from 'node:path';
 import { Router } from 'express';
 import { z } from 'zod';
-import { env } from '../../config/env.js';
 import { errors } from '../../lib/errors.js';
 import { logger } from '../../lib/logger.js';
 import { verifyPassword } from '../../lib/password.js';
@@ -16,7 +13,7 @@ import { deleteAllSessionsForUser } from '../auth/service.js';
 import { sweepUser } from '../privacy/retention.js';
 import {
   countSuperusers,
-  deleteUserById,
+  deleteSelf,
   findUserById,
   setContactSyncEnabled,
   setPassword,
@@ -155,7 +152,10 @@ settingsRouter.delete('/account', requirePasswordRotated, async (req, res, next)
     if (!ok) throw errors.unauthorized('Current password is incorrect');
 
     // The last superuser leaving would lock everyone out of user management,
-    // and there is no signup path to create a replacement.
+    // and there is no signup path to create a replacement. This is the cheap
+    // early exit only — the authoritative check is inside deleteSelf, because
+    // the awaited logout below opens a window two concurrent deletes could both
+    // walk through.
     if (user.role === 'superuser' && countSuperusers() <= 1) {
       throw errors.conflict(
         'You are the only superuser. Promote another account before deleting this one.',
@@ -171,13 +171,20 @@ settingsRouter.delete('/account', requirePasswordRotated, async (req, res, next)
       logger.warn({ err, userId: user.id }, 'wa logout failed during account deletion');
     }
 
-    deleteUserById(user.id);
-    logger.info({ userId: user.id, email: user.email }, 'account self-deleted');
+    const outcome = deleteSelf(user.id);
+    if (outcome === 'last_superuser') {
+      throw errors.conflict(
+        'You are the only superuser. Promote another account before deleting this one.',
+      );
+    }
+    logger.info({ userId: user.id, email: user.email, outcome }, 'account self-deleted');
 
     // Re-asserted rather than assumed: if the disconnect above threw before
     // wipeAuthState ran, the Baileys creds would otherwise outlive the account
-    // they belong to, on disk, with no row left pointing at them.
-    await fs.rm(path.join(env.SESSIONS_DIR, user.id), { recursive: true, force: true });
+    // they belong to, on disk, with no row left pointing at them. This also
+    // removes the `.revoked-*` copies wipeAuthState moves aside — nothing else
+    // prunes them, and the user asked for their data to be gone.
+    await sessionManager.purgeAuthState(user.id);
 
     clearSessionCookies(res);
     res.status(204).end();

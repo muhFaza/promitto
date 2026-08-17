@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { and, eq, sql } from 'drizzle-orm';
 import { env } from '../../config/env.js';
-import { db } from '../../db/client.js';
+import { db, sqlite } from '../../db/client.js';
 import { users, type User } from '../../db/schema.js';
 import { hashPassword } from '../../lib/password.js';
 
@@ -129,4 +129,30 @@ export function countSuperusers(): number {
 
 export function deleteUserById(id: string): void {
   db.delete(users).where(eq(users.id, id)).run();
+}
+
+export type SelfDeleteResult = 'deleted' | 'last_superuser' | 'not_found';
+
+/**
+ * Self-deletion, with the last-superuser check and the delete in one
+ * BEGIN IMMEDIATE. The route checks first as a cheap early exit, but that check
+ * and the delete are separated by an awaited WhatsApp logout — two superusers
+ * deleting at the same moment would both pass it and leave the instance with
+ * nobody who can manage users, and there is no signup path to recover.
+ *
+ * The role is re-read from the DB rather than taken from `req.user`, which is a
+ * snapshot taken at authentication time.
+ *
+ * `not_found` means the row is already gone; the caller should treat the
+ * deletion as done rather than as a refusal.
+ */
+export function deleteSelf(id: string): SelfDeleteResult {
+  const run = sqlite.transaction((): SelfDeleteResult => {
+    const row = db.select({ role: users.role }).from(users).where(eq(users.id, id)).get();
+    if (!row) return 'not_found';
+    if (row.role === 'superuser' && countSuperusers() <= 1) return 'last_superuser';
+    db.delete(users).where(eq(users.id, id)).run();
+    return 'deleted';
+  });
+  return run.immediate();
 }

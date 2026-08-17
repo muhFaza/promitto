@@ -25,13 +25,14 @@ docker compose exec backend npm run cli:reset-superuser-password
 
 docker compose exec backend npx tsx scripts/test-interaction-flush.ts   # recents assertions
 docker compose exec backend npx tsx scripts/test-retention-sweep.ts     # retention assertions
+docker compose exec backend npx tsx scripts/test-ip-anonymize.ts        # IP coarsening assertions
 ```
 
 **There is no test framework.** No `test` script, no runner, no `*.test.ts` anywhere — so there is no "run a single test". Verification is `typecheck` + `lint` + exercising the app. If you add tests, you are also picking the runner; say so rather than assuming one exists.
 
 `scripts/test-seed-superuser.ts` and `scripts/test-reset-superuser.ts` are **not** tests — they are non-interactive stand-ins for the `@inquirer/prompts` CLIs (which need a TTY), e.g. `tsx scripts/test-seed-superuser.ts <email> <password>`.
 
-`scripts/test-interaction-flush.ts` and `scripts/test-retention-sweep.ts` **are** real verification suites despite sharing that prefix. The retention one asserts that expired history is deleted while active and recurring schedules survive, that tenancy holds, and that dry-run deletes nothing — run it after touching `modules/privacy/retention.ts`. As for the recents one: 9 `node:assert/strict` assertions over `recordInteractions` / `recordPinStates` / `listRecent`, against a throwaway SQLite file it migrates and deletes (never the dev DB), exiting 1 on the first failure. Run it after touching recency, pin mirroring, or the recents query. It is still not a *framework* — no runner, no discovery, and nothing else is covered.
+`scripts/test-interaction-flush.ts`, `scripts/test-retention-sweep.ts` and `scripts/test-ip-anonymize.ts` **are** real verification suites despite sharing that prefix. The IP one needs no database — `anonymizeIp` is pure — and is mostly rejection cases, because a fabricated prefix is indistinguishable from a real one once it is in `sessions.ip`. The retention one asserts that expired history is deleted while active and recurring schedules survive, that tenancy holds, and that dry-run deletes nothing — run it after touching `modules/privacy/retention.ts`. As for the recents one: 9 `node:assert/strict` assertions over `recordInteractions` / `recordPinStates` / `listRecent`, against a throwaway SQLite file it migrates and deletes (never the dev DB), exiting 1 on the first failure. Run it after touching recency, pin mirroring, or the recents query. It is still not a *framework* — no runner, no discovery, and nothing else is covered.
 
 Dev-compose gotcha: `backend/node_modules` is a named volume. After changing `backend/package.json`, run `docker compose run --rm backend npm install` or rebuild — otherwise the volume masks the new deps.
 
@@ -177,6 +178,11 @@ change what is stored.
   schedule is live configuration, not history. **That predicate is the most dangerous line in
   the app**: widen it and you silently delete users' live schedules, and there are no backups.
   `scripts/test-retention-sweep.ts` asserts it; run it after touching retention.
+- **`sweepUser` validates `retentionDays` itself** — non-negative integer or it throws. The
+  column has no CHECK constraint, and a negative or `NaN` value future-dates the cutoff, which
+  reads as "everything has expired". `0` stays legal: it *is* the user-initiated purge. The
+  periodic sweeper additionally **skips** any user whose stored value isn't 7/30/60/90/180,
+  logging a warning — unattended and destructive is not the place to guess.
 - **Hard delete, not redaction.** A row kept with its text nulled still records who was
   messaged and when, which is the thing retention exists to stop keeping.
 - **`RETENTION_DRY_RUN`** makes the periodic sweep count and log without deleting.
@@ -187,7 +193,10 @@ change what is stored.
   `recordInteractions` and `recordPinStates` flushes (one `isContactSyncEnabled` read per
   flush, so the two can't disagree mid-drain) and the `upsertSynced` flush. In all three the
   **buffer is drained before the gate is checked** — Baileys keeps streaming regardless of our
-  setting, so an early return above the clear grows the buffer for the life of the process.
+  setting, so an early return *or a throw* above the clear grows the buffer for the life of the
+  process. In `flushPendingRecency` that means both buffers are copied and cleared before the
+  `isContactSyncEnabled` read, which is itself wrapped: a failed read drops that batch rather
+  than stranding it.
   Incoming `messages.upsert` feeds recency through the same flush, so it needs no fourth gate.
 - **`purgeSynced` also nulls `last_interaction_at` and `wa_pinned_at` on the remaining manual
   contacts.** Deleting only `source = 'synced'` rows would leave a record of who the user talks
@@ -195,10 +204,25 @@ change what is stored.
 - **Account deletion is user-reachable and unrecoverable**: password + typed `DELETE`, refused
   with 409 for the last superuser, then a best-effort `disconnect(userId, { logout: true })` to
   unlink the device from the phone (failure logs and continues — WhatsApp must never block the
-  delete), the cascade, and a re-asserted `fs.rm` of the auth dir.
+  delete), the cascade, and `sessionManager.purgeAuthState(userId)`.
+  - The last-superuser check is enforced **inside** `users/service.ts`'s `deleteSelf`, which
+    re-reads the role and re-counts within one `sqlite.transaction().immediate()`. The route's
+    own check is a cheap early exit only: it is separated from the delete by an awaited
+    WhatsApp logout, so two concurrent self-deletes could otherwise both pass it and leave the
+    instance with nobody who can manage users.
+  - **`purgeAuthState` removes `sessions/{userId}` *and* every `{userId}.revoked-*` sibling**,
+    matched by plain string comparison on the directory listing (never a regex built from an
+    id). Deletion is the only path that erases credentials: `wipeAuthState` deliberately
+    *renames* rather than deletes, because the 401 that triggers it is not always trustworthy
+    and there are no backups — so those copies accumulate, and nothing else prunes them. Don't
+    "fix" `wipeAuthState` into an `rm`; the pruning belongs where the user explicitly asked for
+    everything to be gone.
 - **Stored IPs are coarsened** to `/24` (v4) or `/48` (v6) by `lib/ip.ts` before they reach
   `sessions.ip`. The login rate limiter still buckets on the full `req.ip` — it is in-memory
-  and never persisted.
+  and never persisted. Parsing is strict and every failure returns `null`: octets must be 1-3
+  ASCII digits ≤255 (`Number()` would accept `0x10` and `+1`), only one `::` is legal, zone ids
+  and bracketed/port forms are handled explicitly. A `null` is safe to store; an invented
+  prefix looks exactly like a real network. `scripts/test-ip-anonymize.ts` asserts it.
 
 ## Scope — do not expand
 
