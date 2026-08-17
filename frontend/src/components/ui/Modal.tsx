@@ -14,6 +14,17 @@ export function Modal({ open, onClose, title, children }: Props) {
   const dialogRef = useRef<HTMLDivElement>(null);
   const titleId = useId();
 
+  // Every call site passes `onClose` as an inline arrow, so it is a fresh
+  // function on each parent render. Depending on it directly re-ran the setup
+  // effect below on every keystroke in the modal: it rewrote body.style.overflow
+  // and then called focus(), which forces a synchronous layout and — worse —
+  // yanks the caret back to the first field mid-typing. Reading it from a ref
+  // lets the effect key on `open` alone while still calling the current handler.
+  const onCloseRef = useRef(onClose);
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  });
+
   useEffect(() => {
     if (!open) return;
 
@@ -21,7 +32,7 @@ export function Modal({ open, onClose, title, children }: Props) {
 
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
-        onClose();
+        onCloseRef.current();
         return;
       }
       if (e.key !== 'Tab' || !dialogRef.current) return;
@@ -57,7 +68,7 @@ export function Modal({ open, onClose, title, children }: Props) {
       document.body.style.overflow = '';
       previouslyFocused?.focus();
     };
-  }, [open, onClose]);
+  }, [open]);
 
   if (!open) return null;
 
