@@ -91,8 +91,9 @@ export function Privacy() {
         </ul>
         <p className="mt-4 text-sm leading-relaxed text-ink-soft">
           Nothing is sent to any third party. There is no analytics, no advertising, no
-          tracking script, and no data sharing. The only outbound traffic is to WhatsApp
-          itself.
+          tracking script, and no data sharing. Fonts and every other asset are served from
+          this server rather than a CDN, so loading a page here does not tell anyone else
+          that you did. The only outbound traffic is to WhatsApp itself.
         </p>
       </section>
 
