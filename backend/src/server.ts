@@ -26,7 +26,7 @@ import { countRestorable } from './modules/wa-sessions/service.js';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 /**
- * Drops `br` from the client's Accept-Encoding so `compression` negotiates gzip.
+ * Rewrites Accept-Encoding to a single encoding so `compression` cannot pick brotli.
  *
  * compression@1.8 prefers brotli over gzip whenever the client offers it, and
  * that is the wrong trade on this box in both directions at once. Measured on
@@ -38,22 +38,69 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
  * before. Turning brotli's quality up would win the bytes back, but the memory
  * it costs is the one resource here we have none of.
  *
- * If a client somehow offers only `br`, it ends up with an uncompressed
- * response, which is correct — better than claiming an encoding it did not ask
- * for. Every real browser also offers gzip.
+ * This replaces the whole header rather than deleting the `br` token from it.
+ * Subtracting a token looks equivalent and is not — every one of these picked
+ * brotli anyway, and the third is the dangerous one, because the client had
+ * explicitly *forbidden* brotli and token-removal deleted the prohibition:
+ *
+ *   `*`                 — no `br` token to remove, and `*` matches brotli
+ *   `BR, gzip`          — case, if you match the token case-sensitively
+ *   `*;q=1, br;q=0`     — removing `br;q=0` leaves `*;q=1`, which re-permits it
+ *
+ * Deciding what we *will* send, instead of what the client may not have, has no
+ * such edge. A client that accepts neither gzip nor deflate gets `identity` and
+ * an uncompressed response, which is correct — better than claiming an encoding
+ * it did not ask for.
  */
 function preferGzip(req: Request, _res: Response, next: NextFunction): void {
-  const accepted = req.headers['accept-encoding'];
-  if (typeof accepted !== 'string' || !accepted.includes('br')) return next();
+  const raw = req.headers['accept-encoding'];
+  // The header is typed `string | string[]`: a repeated header can arrive as an
+  // array even though Node normally coalesces it. Absent entirely means the
+  // client said nothing, and RFC 9110 lets us leave it alone — compression will
+  // send identity.
+  if (raw === undefined) return next();
 
-  const remaining = accepted
-    .split(',')
-    .filter((token) => !/^\s*br\s*(?:;|$)/i.test(token))
-    .join(',')
-    .trim();
+  // q=0 means "explicitly not acceptable", which is the opposite of absent, so
+  // the two cases have to stay distinguishable — hence a map rather than a set.
+  const q = new Map<string, number>();
+  for (const token of (Array.isArray(raw) ? raw.join(',') : raw).split(',')) {
+    const [coding, ...params] = token.trim().split(';');
+    if (!coding) continue;
+    const weight = params
+      .map((p) => /^\s*q=([\d.]+)\s*$/i.exec(p))
+      .find((m) => m !== null)?.[1];
+    q.set(coding.trim().toLowerCase(), weight === undefined ? 1 : Number(weight));
+  }
 
-  req.headers['accept-encoding'] = remaining === '' ? 'identity' : remaining;
+  // An explicit entry always wins over the `*` wildcard, per RFC 9110 §12.5.3.
+  const acceptable = (coding: string): boolean => {
+    const explicit = q.get(coding);
+    if (explicit !== undefined) return explicit > 0;
+    const wildcard = q.get('*');
+    return wildcard !== undefined && wildcard > 0;
+  };
+
+  req.headers['accept-encoding'] = acceptable('gzip')
+    ? 'gzip'
+    : acceptable('deflate')
+      ? 'deflate'
+      : 'identity';
   next();
+}
+
+/**
+ * Compress the same responses `compression` would, minus partial ones.
+ *
+ * express.static advertises `Accept-Ranges: bytes` and honours `Range`, so a
+ * resuming or range-aware client can get a 206 whose `Content-Range` counts
+ * *raw* bytes (`bytes 0-1023/298242`). Compressing the sliced body afterwards
+ * leaves that header describing something the payload no longer is, and drops
+ * Content-Length along the way. Nothing in the app requests ranges, but the
+ * server offers them to anyone who asks.
+ */
+function shouldCompress(req: Request, res: Response): boolean {
+  if (res.statusCode === 206 || res.getHeader('Content-Range') !== undefined) return false;
+  return compression.filter(req, res);
 }
 
 export function createApp(): Express {
@@ -78,7 +125,7 @@ export function createApp(): Express {
   // (wa-sessions/routes.ts), which compression honours by skipping the response.
   // Without that it would buffer, and WhatsApp pairing would hang with no QR.
   app.use(preferGzip);
-  app.use(compression({ threshold: 1024 }));
+  app.use(compression({ threshold: 1024, filter: shouldCompress }));
 
   app.use(securityHeaders);
   app.use(express.json({ limit: '1mb' }));
