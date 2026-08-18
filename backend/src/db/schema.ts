@@ -49,6 +49,28 @@ export const sessions = sqliteTable(
   }),
 );
 
+// Single-use invite links, the only way a password ever gets set on a new or
+// admin-reset account. The PK is a SHA-256 of the raw token and the raw token is
+// NEVER stored: a session cookie is already access, but an invite row is the
+// power to SET a password, and this DB has no backups while heap snapshots dump
+// process memory straight onto the bind mount. A leaked promitto.db must not
+// hand over every pending account. SHA-256 rather than Argon2 because the token
+// already carries 256 bits of entropy — there is nothing to brute-force, and
+// Argon2 cannot be indexed.
+export const invites = sqliteTable('invites', {
+  tokenHash: text('token_hash').primaryKey(),
+  // UNIQUE: one live invite per user, so reissuing replaces rather than
+  // accumulating usable links.
+  userId: text('user_id')
+    .notNull()
+    .unique()
+    .references(() => users.id, { onDelete: 'cascade' }),
+  expiresAt: integer('expires_at', { mode: 'timestamp_ms' }).notNull(),
+  createdAt: integer('created_at', { mode: 'timestamp_ms' })
+    .notNull()
+    .default(sql`(unixepoch() * 1000)`),
+});
+
 export const waConnections = sqliteTable('wa_connections', {
   userId: text('user_id')
     .primaryKey()
@@ -175,3 +197,5 @@ export type SentMessage = typeof sentMessages.$inferSelect;
 export type NewSentMessage = typeof sentMessages.$inferInsert;
 export type ScheduleType = ScheduledMessage['scheduleType'];
 export type SendStatus = SentMessage['status'];
+export type Invite = typeof invites.$inferSelect;
+export type NewInvite = typeof invites.$inferInsert;

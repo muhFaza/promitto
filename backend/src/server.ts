@@ -9,6 +9,7 @@ import { errorMiddleware } from './middleware/error.js';
 import { requestLogger } from './middleware/logger.js';
 import { authRouter } from './modules/auth/routes.js';
 import { contactsRouter } from './modules/contacts/routes.js';
+import { invitesRouter } from './modules/invites/routes.js';
 import { schedulerRouter } from './modules/scheduler/routes.js';
 import { settingsRouter } from './modules/settings/routes.js';
 import { usersRouter } from './modules/users/routes.js';
@@ -90,6 +91,8 @@ export function createApp(): Express {
 
   app.use('/api/auth', authRouter);
   app.use('/api/users', usersRouter);
+  // Public + unauthenticated by design; see modules/invites/routes.ts.
+  app.use('/api/invite', invitesRouter);
   app.use('/api/wa', waRouter);
   app.use('/api/contacts', contactsRouter);
   app.use('/api/scheduler', schedulerRouter);

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import { ApiError } from '../api/client';
 import * as usersApi from '../api/users';
 import { AppHeader } from '../components/ui/AppHeader';
@@ -9,11 +9,12 @@ import { Input } from '../components/ui/Input';
 import { Modal } from '../components/ui/Modal';
 import { Select } from '../components/ui/Select';
 import { Spinner } from '../components/ui/Spinner';
+import { formatInZone } from '../lib/dates';
 import type { UserPublic } from '../lib/types';
 import { useAuthStore } from '../stores/auth';
 import { useUiStore } from '../stores/ui';
 
-type Reveal = { email: string; password: string } | null;
+type Reveal = { email: string; url: string; expiresAt: number } | null;
 
 export function Admin() {
   const currentUser = useAuthStore((s) => s.user);
@@ -71,10 +72,15 @@ export function Admin() {
   }
 
   async function handleReset(u: UserPublic) {
-    if (!confirm(`Reset password for ${u.email}?`)) return;
+    if (
+      !confirm(
+        `Issue a setup link for ${u.email}?\n\nTheir current password stops working immediately, so they will be locked out until they open the link and set a new one.`,
+      )
+    )
+      return;
     try {
       const r = await usersApi.resetPassword(u.id);
-      setReveal({ email: u.email, password: r.tempPassword });
+      setReveal({ email: u.email, url: r.invite.url, expiresAt: r.invite.expiresAt });
       await refresh();
     } catch (err) {
       pushToast({
@@ -173,7 +179,7 @@ export function Admin() {
                               </Button>
                             )}
                             <Button variant="ghost" onClick={() => handleReset(u)}>
-                              Reset pw
+                              Issue reset link
                             </Button>
                             <Button
                               variant="ghost"
@@ -198,14 +204,14 @@ export function Admin() {
       <CreateUserModal
         open={createOpen}
         onClose={() => setCreateOpen(false)}
-        onCreated={(email, password) => {
+        onCreated={(revealed) => {
           setCreateOpen(false);
-          setReveal({ email, password });
+          setReveal(revealed);
           void refresh();
         }}
       />
 
-      <TempPasswordModal reveal={reveal} onClose={() => setReveal(null)} />
+      <InviteLinkModal reveal={reveal} onClose={() => setReveal(null)} />
     </>
   );
 }
@@ -217,7 +223,7 @@ function CreateUserModal({
 }: {
   open: boolean;
   onClose: () => void;
-  onCreated: (email: string, tempPassword: string) => void;
+  onCreated: (revealed: NonNullable<Reveal>) => void;
 }) {
   const pushToast = useUiStore((s) => s.pushToast);
   const [email, setEmail] = useState('');
@@ -229,7 +235,11 @@ function CreateUserModal({
     setBusy(true);
     try {
       const r = await usersApi.create({ email, role });
-      onCreated(r.user.email, r.tempPassword);
+      onCreated({
+        email: r.user.email,
+        url: r.invite.url,
+        expiresAt: r.invite.expiresAt,
+      });
       setEmail('');
       setRole('user');
     } catch (err) {
@@ -264,7 +274,8 @@ function CreateUserModal({
           </Select>
         </Field>
         <div className="border-l-2 border-amber-soft bg-amber-soft-bg/60 px-3 py-2 text-[12px] text-ink-soft">
-          A one-time password will be generated and shown once. Deliver it out-of-band.
+          No password is generated. You&apos;ll get a one-time setup link to send them
+          out-of-band; they choose their own password.
         </div>
         <div className="flex justify-end gap-2 border-t border-rule pt-4">
           <Button type="button" variant="secondary" onClick={onClose}>
@@ -279,51 +290,69 @@ function CreateUserModal({
   );
 }
 
-function TempPasswordModal({
+function InviteLinkModal({
   reveal,
   onClose,
 }: {
   reveal: Reveal;
   onClose: () => void;
 }) {
+  const zone = useAuthStore((s) => s.user?.timezone) ?? 'UTC';
   const [copied, setCopied] = useState(false);
+  const urlRef = useRef<HTMLElement>(null);
 
   async function copy() {
     if (!reveal) return;
     try {
-      await navigator.clipboard.writeText(reveal.password);
+      await navigator.clipboard.writeText(reveal.url);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     } catch {
-      // clipboard unavailable — user can still select + copy manually
+      // Clipboard blocked or unavailable — select the URL so it can be copied by hand.
+      const node = urlRef.current;
+      if (!node) return;
+      const range = document.createRange();
+      range.selectNodeContents(node);
+      const sel = window.getSelection();
+      sel?.removeAllRanges();
+      sel?.addRange(range);
     }
   }
 
   return (
-    <Modal open={!!reveal} onClose={onClose} title="Temporary password">
+    <Modal open={!!reveal} onClose={onClose} title="One-time setup link">
       {reveal && (
         <div className="space-y-5">
           <div className="border-l-2 border-amber-soft bg-amber-soft-bg/60 px-3 py-2 text-[12px] text-ink-soft">
-            Copy this password now. It will not be shown again.
+            Send this link to them out-of-band. It works once, and you never see their
+            password — they set it themselves.
           </div>
           <div>
             <div className="eyebrow">For</div>
-            <div className="mt-1 text-sm font-medium text-ink">{reveal.email}</div>
+            <div className="mt-1 font-mono text-sm text-ink">{reveal.email}</div>
           </div>
           <div>
-            <div className="eyebrow">One-time password</div>
-            <div className="mt-2 flex gap-2">
-              <code className="flex-1 select-all border border-rule bg-paper-deep px-3 py-2 font-mono text-sm text-ink">
-                {reveal.password}
+            <div className="eyebrow">Setup link</div>
+            <div className="mt-2 flex items-start gap-2">
+              <code
+                ref={urlRef}
+                className="flex-1 select-all break-all border border-rule bg-paper-deep px-3 py-2 font-mono text-[12px] leading-relaxed text-ink"
+              >
+                {reveal.url}
               </code>
               <Button type="button" variant="secondary" onClick={copy}>
                 {copied ? 'Copied' : 'Copy'}
               </Button>
             </div>
+            <p className="mt-2 text-[12px] text-ink-muted">
+              Valid until{' '}
+              <span className="font-mono">{formatInZone(reveal.expiresAt, zone)}</span>{' '}
+              <span className="font-mono">({zone})</span>.
+            </p>
           </div>
           <div className="flex justify-end border-t border-rule pt-4">
             <Button type="button" onClick={onClose}>
-              I&apos;ve stored it
+              I&apos;ve sent it
             </Button>
           </div>
         </div>

@@ -4,6 +4,7 @@ import { ToastContainer } from './components/ui/ToastContainer';
 import { Admin } from './pages/Admin';
 import { Contacts } from './pages/Contacts';
 import { Dashboard } from './pages/Dashboard';
+import { Invite } from './pages/Invite';
 import { Login } from './pages/Login';
 import { Schedule } from './pages/Schedule';
 import { Settings } from './pages/Settings';
@@ -15,6 +16,7 @@ export function App() {
       <Routes>
         <Route path="/" element={<Navigate to="/app" replace />} />
         <Route path="/login" element={<Login />} />
+        <Route path="/invite/:token" element={<Invite />} />
         <Route
           path="/app"
           element={
