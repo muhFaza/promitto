@@ -1,5 +1,6 @@
 import { useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
+import { cn } from '../../lib/cn';
 import { useAuthStore } from '../../stores/auth';
 import { useWaStore } from '../../stores/wa';
 import { WaStatusDot, WaStatusLabel } from '../WaStatusIndicator';
@@ -8,10 +9,13 @@ export function AppHeader() {
   const user = useAuthStore((s) => s.user);
   const logout = useAuthStore((s) => s.logout);
   const status = useWaStore((s) => s.status);
+  const streamStale = useWaStore((s) => s.streamStale);
   const fetchStatus = useWaStore((s) => s.fetchStatus);
   const subscribe = useWaStore((s) => s.subscribe);
   const navigate = useNavigate();
 
+  // Mounted once by AppLayout and kept alive across navigation, so this opens
+  // exactly one event stream per visit rather than one per route change.
   useEffect(() => {
     void fetchStatus().catch(() => {});
     const unsub = subscribe();
@@ -36,12 +40,47 @@ export function AppHeader() {
         <div className="flex items-center gap-5">
           <Link
             to="/app/wa"
-            aria-label={`WhatsApp status: ${status}`}
-            className="flex items-center gap-2 border-b border-transparent pb-0.5 transition-colors hover:border-ink"
+            aria-label={
+              streamStale
+                ? `WhatsApp status: ${status}, last known — live updates disconnected`
+                : `WhatsApp status: ${status}`
+            }
+            className={cn(
+              'flex items-center gap-2 border-b border-transparent pb-0.5 transition-colors hover:border-ink',
+              // Dimming alone would be a colour-only signal, so the word carries
+              // the meaning and the opacity just reinforces it.
+              streamStale && 'opacity-60',
+            )}
           >
             <WaStatusDot status={status} />
             <WaStatusLabel status={status} className="hidden sm:inline" />
+            {streamStale && (
+              <span className="text-[10px] font-medium uppercase tracking-wide text-ink-muted">
+                stale
+              </span>
+            )}
           </Link>
+
+          {/* Without this the stale state is a dead end. AppHeader is mounted by
+              the layout route now, so it survives navigation and its subscribe()
+              effect never runs a second time — only a full page reload would
+              reopen the stream. A deploy takes the backend away for longer than
+              the retry budget, so ordinary deploys would otherwise leave every
+              open tab reading "stale" until someone thought to refresh.
+              Sibling of the Link, not a child: a button inside an anchor is
+              invalid HTML and swallows the click. */}
+          {streamStale && (
+            <button
+              type="button"
+              onClick={() => {
+                void fetchStatus().catch(() => {});
+                subscribe();
+              }}
+              className="eyebrow border-b border-transparent transition-colors hover:border-ink hover:text-ink"
+            >
+              Reconnect
+            </button>
+          )}
 
           {user && (
             <div className="hidden text-right md:block">
