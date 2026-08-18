@@ -186,6 +186,12 @@ change what is stored.
 - **Hard delete, not redaction.** A row kept with its text nulled still records who was
   messaged and when, which is the thing retention exists to stop keeping.
 - **`RETENTION_DRY_RUN`** makes the periodic sweep count and log without deleting.
+  **The first production deploy of this feature runs with `RETENTION_DRY_RUN=true` in
+  `~/promitto/.env`** and is armed later by removing that line. The 60-day default is
+  retroactive and the boot sweep fires immediately, so without this window every user
+  loses history older than 60 days before they can choose 90 or 180 — and there are no
+  backups. `docker-compose.prod.yml` passes it through as `${RETENTION_DRY_RUN:-false}`,
+  so the safe state is opt-in and forgetting the .env line arms it rather than disabling it.
   `sweepUser(id, days, { dryRun: false })` overrides it, and the user-initiated purge pins it
   false on purpose — an operator flag must never turn "delete my data" into a silent no-op
   that still reports counts.

@@ -40,6 +40,12 @@ services:
       BAILEYS_LOG_LEVEL: ${BAILEYS_LOG_LEVEL:-silent}
       DEFAULT_TIMEZONE: ${DEFAULT_TIMEZONE:-Asia/Jakarta}
       TRUST_PROXY: "true"
+      # Retention deletes permanently and there are no backups, so the first
+      # deploy of this feature runs with this set to true in ~/promitto/.env:
+      # the sweeper logs what it *would* delete and deletes nothing, giving
+      # users a window to pick 90/180 days before the 60-day default bites
+      # retroactively. Remove it from .env to arm the sweeper for real.
+      RETENTION_DRY_RUN: ${RETENTION_DRY_RUN:-false}
       # This pins determinism, it does not add headroom. V8 derives its heap cap
       # from HOST RAM rather than the cgroup, and on this 965MB box it was
       # already choosing ~259MB — so the old 256 was a hair *below* what it
