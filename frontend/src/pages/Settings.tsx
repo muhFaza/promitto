@@ -3,7 +3,6 @@ import { Link, useNavigate } from 'react-router-dom';
 import { ApiError } from '../api/client';
 import * as contactsApi from '../api/contacts';
 import * as settingsApi from '../api/settings';
-import { AppHeader } from '../components/ui/AppHeader';
 import { Button } from '../components/ui/Button';
 import { Field } from '../components/ui/Field';
 import { Input } from '../components/ui/Input';
@@ -195,7 +194,7 @@ export function Settings() {
 
   async function handleDeleteAccount(e: FormEvent) {
     e.preventDefault();
-    if (deleteConfirm !== 'DELETE') return;
+    if (deleteConfirm !== 'DELETE' || !deletePw) return;
     setDeleteError(null);
     setDeleteBusy(true);
     try {
@@ -218,7 +217,6 @@ export function Settings() {
 
   return (
     <>
-      <AppHeader />
       <main className="mx-auto max-w-2xl space-y-12 px-6 pb-24 pt-10">
         <header>
           <div className="eyebrow">Profile · security</div>
@@ -339,7 +337,7 @@ export function Settings() {
             explains what is stored and who can read it.
           </p>
 
-          <div className="mt-6 space-y-4">
+          <div className="mt-6 space-y-3">
             <Field label="Keep history for">
               <Select
                 value={String(user?.retentionDays ?? 60)}
@@ -405,7 +403,7 @@ export function Settings() {
                 without waiting for the retention period. This does not come back.
               </p>
               {historyOpen ? (
-                <form className="mt-3 max-w-sm space-y-3" onSubmit={handlePurgeHistory}>
+                <form className="mt-3 max-w-sm space-y-4" onSubmit={handlePurgeHistory}>
                   <Field label="Current password">
                     <Input
                       type="password"
@@ -424,7 +422,7 @@ export function Settings() {
                     </div>
                   )}
                   <div className="flex gap-2">
-                    <Button type="submit" variant="danger" disabled={historyBusy}>
+                    <Button type="submit" variant="danger" disabled={historyBusy || !historyPw}>
                       {historyBusy ? <Spinner /> : 'Delete history'}
                     </Button>
                     <Button
@@ -471,11 +469,7 @@ export function Settings() {
         </section>
       </main>
 
-      <Modal
-        open={deleteOpen}
-        onClose={closeDelete}
-        title="Delete your account"
-      >
+      <Modal open={deleteOpen} onClose={closeDelete} title="Delete your account">
         <p className="text-[13px] leading-relaxed text-ink-soft">
           This permanently destroys, with no way to undo it:
         </p>

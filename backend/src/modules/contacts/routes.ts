@@ -84,6 +84,11 @@ contactsRouter.get('/:id/avatar', async (req, res, next) => {
     // arbitrary scheme is not something to be one upstream change away from.
     // Anything that isn't a parseable https URL takes the same 404 path as null.
     if (!url || !isHttpsUrl(url)) throw errors.notFound('avatar');
+    // Let the browser reuse the redirect for a few minutes. The Dashboard's
+    // recent-contacts row can mount ~48 of these at once, and without this every
+    // remount re-asks the server, which re-asks Baileys, for a URL that has not
+    // changed. `private` because the target is scoped to one user's session.
+    res.setHeader('Cache-Control', 'private, max-age=300');
     res.redirect(302, url);
   } catch (err) {
     next(err);

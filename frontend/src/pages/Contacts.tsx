@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import { ApiError } from '../api/client';
 import * as contactsApi from '../api/contacts';
-import { AppHeader } from '../components/ui/AppHeader';
 import { Badge } from '../components/ui/Badge';
 import { Button } from '../components/ui/Button';
 import { Field } from '../components/ui/Field';
@@ -117,180 +116,177 @@ export function Contacts() {
   }
 
   return (
-    <>
-      <AppHeader />
-      <main className="mx-auto max-w-5xl px-6 pb-24 pt-10">
-        <header>
-          <div className="eyebrow">The roster</div>
-          <h1 className="mt-2 font-display text-4xl italic leading-none text-ink">
-            Contacts
-          </h1>
-          <p className="mt-3 text-sm text-ink-soft">
-            Synced from WhatsApp pairing, plus anything you add by hand.
-          </p>
-        </header>
+    <main className="mx-auto max-w-5xl px-6 pb-24 pt-10">
+      <header>
+        <div className="eyebrow">The roster</div>
+        <h1 className="mt-2 font-display text-4xl italic leading-none text-ink">
+          Contacts
+        </h1>
+        <p className="mt-3 text-sm text-ink-soft">
+          Synced from WhatsApp pairing, plus anything you add by hand.
+        </p>
+      </header>
 
-        <section className="mt-10 border-y border-rule py-6">
-          <div className="eyebrow mb-4">Add manually</div>
-          <form
-            onSubmit={handleAdd}
-            className="grid gap-4 sm:grid-cols-[1fr_1fr_auto] sm:items-end"
-          >
-            <Field label="Phone">
-              <Input
-                type="tel"
-                value={phone}
-                onChange={(e) => setPhone(e.target.value)}
-                required
-                placeholder="0812xxxx or +628xxxx"
-              />
-            </Field>
-            <Field label="Display name">
-              <Input
-                type="text"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                required
-                placeholder="Jane Doe"
-              />
-            </Field>
-            <div>
-              <Button type="submit" disabled={busy} className="w-full sm:w-auto">
-                {busy ? <Spinner /> : 'Add →'}
-              </Button>
-            </div>
-          </form>
-        </section>
-
-        <section className="mt-10">
-          <div className="mb-4 flex items-center justify-between gap-4">
+      <section className="mt-10 border-y border-rule py-6">
+        <div className="eyebrow mb-4">Add manually</div>
+        <form
+          onSubmit={handleAdd}
+          className="grid gap-4 sm:grid-cols-[1fr_1fr_auto] sm:items-end"
+        >
+          <Field label="Phone">
             <Input
-              type="search"
-              placeholder="Search by name or phone…"
-              value={search}
-              onChange={(e) => handleSearch(e.target.value)}
-              className="max-w-sm"
+              type="tel"
+              value={phone}
+              onChange={(e) => setPhone(e.target.value)}
+              required
+              placeholder="0812xxxx or +628xxxx"
             />
-            <span className="text-[12px] text-ink-muted">
-              {rows.length} {rows.length === 1 ? 'entry' : 'entries'}
-            </span>
+          </Field>
+          <Field label="Display name">
+            <Input
+              type="text"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              required
+              placeholder="Jane Doe"
+            />
+          </Field>
+          <div>
+            <Button type="submit" disabled={busy} className="w-full sm:w-auto">
+              {busy ? <Spinner /> : 'Add →'}
+            </Button>
           </div>
+        </form>
+      </section>
 
-          {loading ? (
-            <div className="flex items-center justify-center p-16 text-ink-muted">
-              <Spinner size={24} />
+      <section className="mt-10">
+        <div className="mb-4 flex items-center justify-between gap-4">
+          <Input
+            type="search"
+            placeholder="Search by name or phone…"
+            value={search}
+            onChange={(e) => handleSearch(e.target.value)}
+            className="max-w-sm"
+          />
+          <span className="text-[12px] text-ink-muted">
+            {rows.length} {rows.length === 1 ? 'entry' : 'entries'}
+          </span>
+        </div>
+
+        {loading ? (
+          <div className="flex items-center justify-center p-16 text-ink-muted">
+            <Spinner size={24} />
+          </div>
+        ) : rows.length === 0 ? (
+          <div className="border-y border-rule px-6 py-16 text-center">
+            <div className="font-display text-xl italic text-ink">
+              No contacts yet.
             </div>
-          ) : rows.length === 0 ? (
-            <div className="border-y border-rule px-6 py-16 text-center">
-              <div className="font-display text-xl italic text-ink">
-                No contacts yet.
-              </div>
-              <div className="eyebrow mt-2">
-                {search
-                  ? 'No matches for your search.'
-                  : 'Add one above, or connect WhatsApp to sync.'}
-              </div>
+            <div className="eyebrow mt-2">
+              {search
+                ? 'No matches for your search.'
+                : 'Add one above, or connect WhatsApp to sync.'}
             </div>
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="min-w-full text-sm">
-                <thead>
-                  <tr className="border-b border-rule">
-                    <th className="eyebrow px-4 py-3 text-left">Name</th>
-                    <th className="eyebrow px-4 py-3 text-left">Phone</th>
-                    <th className="eyebrow px-4 py-3 text-left">Source</th>
-                    <th className="eyebrow px-4 py-3 text-left">WA</th>
-                    <th className="eyebrow px-4 py-3 text-right">Actions</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {rows.map((c) => (
-                    <tr
-                      key={c.id}
-                      className="border-b border-rule/60 transition-colors hover:bg-paper-raised"
-                    >
-                      <td className="px-4 py-4 align-top text-ink">
-                        {editingId === c.id ? (
-                          <div className="flex flex-wrap gap-2">
-                            <Input
-                              autoFocus
-                              value={editName}
-                              onChange={(e) => setEditName(e.target.value)}
-                              onKeyDown={(e) => {
-                                if (e.key === 'Enter') void handleRename(c);
-                                if (e.key === 'Escape') {
-                                  setEditingId(null);
-                                  setEditName('');
-                                }
-                              }}
-                              className="max-w-[200px]"
-                            />
-                            <Button
-                              variant="secondary"
-                              onClick={() => void handleRename(c)}
-                            >
-                              Save
-                            </Button>
-                            <Button
-                              variant="ghost"
-                              onClick={() => {
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="min-w-full text-sm">
+              <thead>
+                <tr className="border-b border-rule">
+                  <th className="eyebrow px-4 py-3 text-left">Name</th>
+                  <th className="eyebrow px-4 py-3 text-left">Phone</th>
+                  <th className="eyebrow px-4 py-3 text-left">Source</th>
+                  <th className="eyebrow px-4 py-3 text-left">WA</th>
+                  <th className="eyebrow px-4 py-3 text-right">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((c) => (
+                  <tr
+                    key={c.id}
+                    className="border-b border-rule/60 transition-colors hover:bg-paper-raised"
+                  >
+                    <td className="px-4 py-4 align-top text-ink">
+                      {editingId === c.id ? (
+                        <div className="flex flex-wrap gap-2">
+                          <Input
+                            autoFocus
+                            value={editName}
+                            onChange={(e) => setEditName(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') void handleRename(c);
+                              if (e.key === 'Escape') {
                                 setEditingId(null);
                                 setEditName('');
-                              }}
-                            >
-                              Cancel
-                            </Button>
-                          </div>
-                        ) : (
-                          c.displayName
-                        )}
-                      </td>
-                      <td className="px-4 py-4 align-top font-mono text-[12px] text-ink-soft">
-                        {c.phone}
-                      </td>
-                      <td className="px-4 py-4 align-top">
-                        <Badge tone={c.source === 'synced' ? 'info' : 'neutral'}>
-                          {c.source}
-                        </Badge>
-                      </td>
-                      <td className="px-4 py-4 align-top">
-                        {c.verifiedOnWhatsapp === true ? (
-                          <Badge tone="success">verified</Badge>
-                        ) : c.verifiedOnWhatsapp === false ? (
-                          <Badge tone="danger">not on WA</Badge>
-                        ) : (
-                          <Badge tone="warning">unverified</Badge>
-                        )}
-                      </td>
-                      <td className="px-4 py-4 text-right align-top">
-                        <div className="flex justify-end gap-2">
-                          {editingId !== c.id && (
-                            <Button
-                              variant="ghost"
-                              onClick={() => {
-                                setEditingId(c.id);
-                                setEditName(c.displayName);
-                              }}
-                            >
-                              Rename
-                            </Button>
-                          )}
+                              }
+                            }}
+                            className="max-w-[200px]"
+                          />
+                          <Button
+                            variant="secondary"
+                            onClick={() => void handleRename(c)}
+                          >
+                            Save
+                          </Button>
                           <Button
                             variant="ghost"
-                            onClick={() => void handleDelete(c)}
+                            onClick={() => {
+                              setEditingId(null);
+                              setEditName('');
+                            }}
                           >
-                            Delete
+                            Cancel
                           </Button>
                         </div>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </section>
-      </main>
-    </>
+                      ) : (
+                        c.displayName
+                      )}
+                    </td>
+                    <td className="px-4 py-4 align-top font-mono text-[12px] text-ink-soft">
+                      {c.phone}
+                    </td>
+                    <td className="px-4 py-4 align-top">
+                      <Badge tone={c.source === 'synced' ? 'info' : 'neutral'}>
+                        {c.source}
+                      </Badge>
+                    </td>
+                    <td className="px-4 py-4 align-top">
+                      {c.verifiedOnWhatsapp === true ? (
+                        <Badge tone="success">verified</Badge>
+                      ) : c.verifiedOnWhatsapp === false ? (
+                        <Badge tone="danger">not on WA</Badge>
+                      ) : (
+                        <Badge tone="warning">unverified</Badge>
+                      )}
+                    </td>
+                    <td className="px-4 py-4 text-right align-top">
+                      <div className="flex justify-end gap-2">
+                        {editingId !== c.id && (
+                          <Button
+                            variant="ghost"
+                            onClick={() => {
+                              setEditingId(c.id);
+                              setEditName(c.displayName);
+                            }}
+                          >
+                            Rename
+                          </Button>
+                        )}
+                        <Button
+                          variant="ghost"
+                          onClick={() => void handleDelete(c)}
+                        >
+                          Delete
+                        </Button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
+    </main>
   );
 }

@@ -9,6 +9,10 @@ type WaState = {
   lastError: string | null;
   latestQr: string | null;
   subscribed: boolean;
+  // True once the event stream has given up reconnecting. `status` is then a
+  // snapshot from whenever the stream died, not live state — the UI has to say
+  // so rather than keep presenting it as current.
+  streamStale: boolean;
 
   fetchStatus: () => Promise<void>;
   connect: () => Promise<void>;
@@ -28,6 +32,7 @@ export const useWaStore = create<WaState>()((set, get) => ({
   lastError: null,
   latestQr: null,
   subscribed: false,
+  streamStale: false,
 
   async fetchStatus() {
     const snap = await waApi.getStatus();
@@ -61,8 +66,19 @@ export const useWaStore = create<WaState>()((set, get) => ({
 
   subscribe() {
     if (get().subscribed) return () => {};
-    set({ subscribed: true });
+    set({ subscribed: true, streamStale: false });
     const unsub = subscribeSse<WaEvent>('/api/wa/events', {
+      onOpen: () => set({ streamStale: false }),
+      onError: (_err, { willRetry }) => {
+        if (willRetry) return;
+        // The wrapper has stopped retrying and closed the source, so nothing
+        // will update `status` again. Release the subscription slot as well as
+        // flagging it — that way a later mount can open a fresh stream instead
+        // of being turned away by the `subscribed` guard. The identity check in
+        // the unsub closure below keeps this stale one from clobbering it.
+        activeSseUnsub = null;
+        set({ subscribed: false, streamStale: true });
+      },
       onMessage: (ev) => {
         if (ev.type === 'status') {
           set({
@@ -103,6 +119,7 @@ export const useWaStore = create<WaState>()((set, get) => ({
       lastError: null,
       latestQr: null,
       subscribed: false,
+      streamStale: false,
     });
   },
 }));
