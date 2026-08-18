@@ -11,9 +11,18 @@ FROM node:20-alpine AS backend-builder
 RUN apk add --no-cache python3 make g++ sqlite
 WORKDIR /app/backend
 COPY backend/package*.json ./
+# patches/ has to land BEFORE npm ci. postinstall runs patch-package, and with no
+# patches directory it exits 0 having done nothing — silently shipping a Baileys
+# whose per-socket AsyncLocalStorage leak is back.
+COPY backend/patches ./patches
 RUN npm ci
 COPY backend/ ./
 RUN npm run build && npm prune --production
+# Fail the build rather than ship an unpatched Baileys. npm prune runs after the
+# patch was applied and does not re-install, so this asserts what actually gets
+# copied into the runtime stage.
+RUN grep -q signalTxStore node_modules/@whiskeysockets/baileys/lib/Utils/auth-utils.js \
+    || { echo 'FATAL: Baileys ALS patch is missing from the image — see backend/patches/' >&2; exit 1; }
 
 ### ---- runtime ----
 FROM node:20-alpine AS runtime
