@@ -30,22 +30,9 @@ export default {
         },
       },
       fontFamily: {
-        display: ['"Fraunces Variable"', '"Fraunces"', 'ui-serif', 'Georgia', 'serif'],
-        sans: [
-          '"Geist Variable"',
-          '"Geist"',
-          'ui-sans-serif',
-          'system-ui',
-          '-apple-system',
-          'sans-serif',
-        ],
-        mono: [
-          '"Geist Mono Variable"',
-          '"Geist Mono"',
-          'ui-monospace',
-          'SFMono-Regular',
-          'monospace',
-        ],
+        display: ['"Fraunces"', 'ui-serif', 'Georgia', 'serif'],
+        sans: ['"Geist"', 'ui-sans-serif', 'system-ui', '-apple-system', 'sans-serif'],
+        mono: ['"Geist Mono"', 'ui-monospace', 'SFMono-Regular', 'monospace'],
       },
       letterSpacing: {
         caps: '0.18em',
