@@ -62,6 +62,7 @@ export function Settings() {
 
   async function handleTz(e: FormEvent) {
     e.preventDefault();
+    if (tzBusy) return;
     setTzBusy(true);
     try {
       const updated = await settingsApi.changeTimezone(tz);
@@ -79,6 +80,9 @@ export function Settings() {
 
   async function handlePw(e: FormEvent) {
     e.preventDefault();
+    // Enter inside a still-enabled field submits even while the button is
+    // disabled, so the busy flag has to be checked here, not only on the button.
+    if (pwBusy) return;
     setPwError(null);
     if (newPw !== newPw2) {
       setPwError('Passwords do not match');
@@ -143,7 +147,7 @@ export function Settings() {
 
   async function handlePurgeContacts() {
     const ok = window.confirm(
-      'Delete every contact synced from WhatsApp? Manually added contacts are kept. Synced contacts come back if you reconnect with syncing on.',
+      'Delete every contact synced from WhatsApp? Manually added contacts are kept. While syncing is on, contacts start coming back as soon as WhatsApp sends them again.',
     );
     if (!ok) return;
     setContactsBusy(true);
@@ -164,8 +168,18 @@ export function Settings() {
     }
   }
 
+  function closeHistory() {
+    // Closing mid-request would unmount the form and take its error state with
+    // it, leaving the outcome nowhere to land.
+    if (historyBusy) return;
+    setHistoryOpen(false);
+    setHistoryPw('');
+    setHistoryError(null);
+  }
+
   async function handlePurgeHistory(e: FormEvent) {
     e.preventDefault();
+    if (historyBusy) return;
     setHistoryError(null);
     setHistoryBusy(true);
     try {
@@ -186,6 +200,12 @@ export function Settings() {
   }
 
   function closeDelete() {
+    // Modal calls this on Escape and on a backdrop click with no busy guard of
+    // its own. Closing while the request is in flight unmounts the form and
+    // clears deleteError, so the response would have nowhere to be shown —
+    // including the 409 last-superuser case, where the WhatsApp pairing has
+    // already been destroyed server-side and the user must be told.
+    if (deleteBusy) return;
     setDeleteOpen(false);
     setDeletePw('');
     setDeleteConfirm('');
@@ -194,6 +214,9 @@ export function Settings() {
 
   async function handleDeleteAccount(e: FormEvent) {
     e.preventDefault();
+    // A second DELETE would land after the session cookies are gone and answer
+    // 401, racing the redirect with a failure that never happened.
+    if (deleteBusy) return;
     if (deleteConfirm !== 'DELETE' || !deletePw) return;
     setDeleteError(null);
     setDeleteBusy(true);
@@ -238,7 +261,7 @@ export function Settings() {
           </div>
         )}
 
-        <section className={`${mustChange ? 'pointer-events-none opacity-40 ' : ''}border-y border-rule py-8`}>
+        <section className={`${mustChange ? 'opacity-40 ' : ''}border-y border-rule py-8`}>
           <div className="eyebrow">Timezone</div>
           <h2 className="mt-1 font-display text-2xl italic text-ink">
             Where does "now" mean now.
@@ -255,6 +278,7 @@ export function Settings() {
                 onChange={(e) => setTz(e.target.value)}
                 list="timezones-list"
                 placeholder="e.g. Asia/Jakarta"
+                disabled={mustChange}
                 required
               />
               <datalist id="timezones-list">
@@ -265,7 +289,7 @@ export function Settings() {
             </Field>
             <Button
               type="submit"
-              disabled={tzBusy || !tz || tz === user?.timezone}
+              disabled={mustChange || tzBusy || !tz || tz === user?.timezone}
             >
               {tzBusy ? <Spinner /> : 'Save timezone →'}
             </Button>
@@ -324,7 +348,7 @@ export function Settings() {
           </form>
         </section>
 
-        <section className={`${mustChange ? 'pointer-events-none opacity-40 ' : ''}border-b border-rule pb-8`}>
+        <section className={`${mustChange ? 'opacity-40 ' : ''}border-b border-rule pb-8`}>
           <div className="eyebrow">Privacy &amp; data</div>
           <h2 className="mt-1 font-display text-2xl italic text-ink">
             What the server keeps.
@@ -341,7 +365,7 @@ export function Settings() {
             <Field label="Keep history for">
               <Select
                 value={String(user?.retentionDays ?? 60)}
-                disabled={retentionBusy}
+                disabled={mustChange || retentionBusy}
                 onChange={(e) => void handleRetention(Number(e.target.value))}
               >
                 {RETENTION_OPTIONS.map((d) => (
@@ -364,7 +388,7 @@ export function Settings() {
               type="checkbox"
               className="mt-0.5 h-4 w-4 shrink-0 accent-accent"
               checked={user?.contactSyncEnabled ?? false}
-              disabled={syncBusy}
+              disabled={mustChange || syncBusy}
               onChange={(e) => void handleContactSync(e.target.checked)}
             />
             <span>
@@ -384,13 +408,15 @@ export function Settings() {
             <div>
               <p className="max-w-md text-[13px] text-ink-soft">
                 Delete every contact that came from WhatsApp, along with its pin and
-                last-interaction data. Contacts you typed in yourself are kept. Synced
-                contacts reappear if you reconnect with syncing on.
+                last-interaction data. Contacts you typed in yourself are kept. While
+                syncing is on this is temporary: with a live connection, contacts start
+                coming back within seconds, and activity refills on the ones you kept. Turn
+                syncing off first if you want it to stick.
               </p>
               <Button
                 variant="secondary"
                 className="mt-3 text-accent-warm"
-                disabled={contactsBusy}
+                disabled={mustChange || contactsBusy}
                 onClick={() => void handlePurgeContacts()}
               >
                 {contactsBusy ? <Spinner /> : 'Delete synced contacts'}
@@ -425,14 +451,7 @@ export function Settings() {
                     <Button type="submit" variant="danger" disabled={historyBusy || !historyPw}>
                       {historyBusy ? <Spinner /> : 'Delete history'}
                     </Button>
-                    <Button
-                      variant="ghost"
-                      onClick={() => {
-                        setHistoryOpen(false);
-                        setHistoryPw('');
-                        setHistoryError(null);
-                      }}
-                    >
+                    <Button variant="ghost" disabled={historyBusy} onClick={closeHistory}>
                       Cancel
                     </Button>
                   </div>
@@ -441,6 +460,7 @@ export function Settings() {
                 <Button
                   variant="secondary"
                   className="mt-3 text-accent-warm"
+                  disabled={mustChange}
                   onClick={() => setHistoryOpen(true)}
                 >
                   Delete message history
@@ -450,7 +470,7 @@ export function Settings() {
           </div>
         </section>
 
-        <section className={mustChange ? 'pointer-events-none opacity-40' : undefined}>
+        <section className={mustChange ? 'opacity-40' : undefined}>
           <div className="eyebrow text-accent-warm">Danger zone</div>
           <h2 className="mt-1 font-display text-2xl italic text-ink">
             Leave nothing behind.
@@ -462,6 +482,7 @@ export function Settings() {
           <Button
             variant="danger"
             className="mt-6"
+            disabled={mustChange}
             onClick={() => setDeleteOpen(true)}
           >
             Delete my account
@@ -478,8 +499,13 @@ export function Settings() {
           <li>every contact, synced and manual</li>
           <li>every schedule, upcoming and recurring</li>
           <li>your whole sent-message history</li>
-          <li>your WhatsApp pairing — the device is unlinked</li>
+          <li>your WhatsApp pairing, and a request to WhatsApp to unlink the device</li>
         </ul>
+        <p className="mt-3 text-[13px] leading-relaxed text-ink-soft">
+          The unlink request only reaches WhatsApp if the session is still connected, and it
+          is never allowed to block the deletion — so check Linked devices on your phone
+          afterwards and remove it there if it is still listed.
+        </p>
         <p className="mt-3 text-[13px] leading-relaxed text-ink-soft">
           There are no backups of any of it. Once this finishes, it is gone.
         </p>
@@ -521,7 +547,7 @@ export function Settings() {
             >
               {deleteBusy ? <Spinner /> : 'Delete everything'}
             </Button>
-            <Button variant="ghost" onClick={closeDelete}>
+            <Button variant="ghost" disabled={deleteBusy} onClick={closeDelete}>
               Cancel
             </Button>
           </div>

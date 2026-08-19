@@ -1,8 +1,13 @@
 import { Link } from 'react-router-dom';
+import { useAuthStore } from '../stores/auth';
 
 const REPO_URL = 'https://github.com/muhFaza/promitto';
 
 export function Privacy() {
+  // This page is public, but most visitors arrive from the Settings link, so the
+  // signed-in case is the common one — and /login would only bounce them to /app.
+  const signedIn = useAuthStore((s) => s.user !== null);
+
   return (
     <main className="mx-auto max-w-2xl px-6 pb-24 pt-12">
       <header>
@@ -55,7 +60,16 @@ export function Privacy() {
         <p className="mt-3 text-sm leading-relaxed text-ink-soft">
           You can end it at any time. Unlink the device from WhatsApp on your phone
           (Settings, Linked devices), or disconnect from the WhatsApp page here, or delete
-          your account, which unlinks the device and removes the stored pairing.
+          your account.
+        </p>
+        <p className="mt-3 text-sm leading-relaxed text-ink-soft">
+          Disconnecting here and deleting your account both remove the stored pairing from
+          this server and ask WhatsApp to unlink the device — but that request only reaches
+          WhatsApp if the session is still connected at the time, and it is never allowed to
+          hold up the deletion. If the connection had already dropped, the device can stay
+          listed on your phone, and once the account is gone there is nothing here left to
+          try again with. So check Linked devices on your phone afterwards. Removing it
+          there always works, and is the one step that does not depend on this server.
         </p>
       </section>
 
@@ -71,29 +85,46 @@ export function Privacy() {
           </li>
           <li className="border-l-2 border-rule pl-4">
             <span className="text-ink">Message text.</span> Everything you schedule, and a
-            copy of everything that was sent, along with the recipient and the time.
+            copy of everything that was sent, along with the recipient and the time. When a
+            send fails, the error WhatsApp returned is stored with it so you can see why.
           </li>
           <li className="border-l-2 border-rule pl-4">
-            <span className="text-ink">Contacts.</span> Names and phone numbers. If contact
-            syncing is on, these are copied from your WhatsApp address book when you pair,
-            along with which chats you have pinned and roughly when you last interacted with
-            each contact. You can turn syncing off and delete what was synced, in Settings.
+            <span className="text-ink">Contacts.</span> Names and phone numbers, and whether
+            the number was confirmed to be on WhatsApp. If contact syncing is on, these are
+            copied from your WhatsApp address book when you pair, along with which chats you
+            have pinned and roughly when you last interacted with each contact. You can turn
+            syncing off and delete what was synced, in Settings.
+          </li>
+          <li className="border-l-2 border-rule pl-4">
+            <span className="text-ink">Your WhatsApp number.</span> Once you pair, the phone
+            number of the linked account is stored with the connection, along with its
+            current status and when it last connected.
           </li>
           <li className="border-l-2 border-rule pl-4">
             <span className="text-ink">WhatsApp session files.</span> The credentials that
-            keep the device link alive, on the server&rsquo;s disk.
+            keep the device link alive, on the server&rsquo;s disk. They also include a
+            mapping of the WhatsApp accounts you have exchanged messages with — thousands of
+            entries on an account that has been in use a while. That mapping is part of what
+            lets the server address and decrypt those chats, so it is not something that can
+            be pruned on its own, and turning contact syncing off does not touch it.
+            Unlinking sets the whole set of files aside on the server; deleting your account
+            removes them.
           </li>
           <li className="border-l-2 border-rule pl-4">
             <span className="text-ink">Login sessions.</span> A cookie, your browser&rsquo;s
             user agent string, and a coarse network prefix rather than your full IP address
-            — enough to tell networks apart, not enough to point at a household.
+            — enough to tell networks apart, not enough to point at a household. Each
+            session also records when you signed in and when it was last used.
           </li>
         </ul>
         <p className="mt-4 text-sm leading-relaxed text-ink-soft">
           Nothing is sent to any third party. There is no analytics, no advertising, no
-          tracking script, and no data sharing. Fonts and every other asset are served from
-          this server rather than a CDN, so loading a page here does not tell anyone else
-          that you did. The only outbound traffic is to WhatsApp itself.
+          tracking script, and no data sharing. Fonts and the rest of the interface are
+          served from this server rather than a CDN. There is one exception: contact profile
+          pictures are held on WhatsApp&rsquo;s own servers, and this server points your
+          browser at them rather than fetching and re-serving them, so opening a page that
+          shows contacts makes your browser connect to WhatsApp directly. Beyond that, the
+          only outbound traffic is to WhatsApp itself.
         </p>
       </section>
 
@@ -172,9 +203,9 @@ export function Privacy() {
       <div className="mt-12 flex items-center justify-between border-t border-rule pt-6">
         <Link
           className="text-[12px] text-ink-muted underline underline-offset-4 hover:text-ink"
-          to="/login"
+          to={signedIn ? '/app' : '/login'}
         >
-          ← Back to sign in
+          {signedIn ? '← Back to Promitto' : '← Back to sign in'}
         </Link>
         <div className="eyebrow">one vps · one container · no saas</div>
       </div>
