@@ -213,20 +213,22 @@ export function Dashboard() {
               {nextUp.map((s) => (
                 <li
                   key={s.id}
-                  className="grid grid-cols-1 items-baseline gap-x-5 gap-y-1 py-3 sm:grid-cols-[205px_1fr_auto]"
+                  className="grid grid-cols-1 gap-y-1 py-3 sm:grid-cols-[205px_1fr_auto] sm:items-baseline sm:gap-x-5"
                 >
-                  {/* No font-mono: "Tomorrow" is prose, and mono is reserved
-                      for machine output. The exact timestamp stays one hover
-                      away rather than being spelled out on every row. */}
-                  <div title={formatInZone(s.nextRunAt, tz)}>
-                    <div className="text-[12px] leading-snug text-ink-soft">
-                      {formatFriendly(s.nextRunAt, tz, now)}
-                    </div>
-                    <div className="text-[11px] leading-snug text-ink-muted">
-                      {formatCountdown(s.nextRunAt, now, tz)}
-                    </div>
-                  </div>
-                  <div className="min-w-0">
+                  {/* Recipient first in the DOM, not the timestamp. Stacked in
+                      one column on mobile, the old order put the lightest line
+                      (12px ink-soft) first and the heaviest (the name) third,
+                      so the row read bottom-heavy and the two halves ran
+                      together. Leading with the name makes visual order and
+                      DOM order agree — which is also what a screen reader and
+                      keyboard focus follow.
+
+                      On sm+ the ledger wants the timestamp back in the left
+                      column, so the three cells are placed EXPLICITLY rather
+                      than by document order. Using `order` instead would put
+                      the visual/DOM mismatch on mobile, where the stacked
+                      layout makes it most confusing. */}
+                  <div className="min-w-0 sm:col-start-2 sm:row-start-1">
                     <div className="truncate text-sm font-medium text-ink">
                       {s.recipientNameSnapshot}
                     </div>
@@ -234,8 +236,22 @@ export function Dashboard() {
                       {s.messageText}
                     </div>
                   </div>
+                  {/* No font-mono: "Tomorrow" is prose, and mono is reserved
+                      for machine output. The exact timestamp stays one hover
+                      away rather than being spelled out on every row. */}
+                  <div
+                    className="mt-1 sm:col-start-1 sm:row-start-1 sm:mt-0"
+                    title={formatInZone(s.nextRunAt, tz)}
+                  >
+                    <div className="text-[12px] leading-snug text-ink-soft">
+                      {formatFriendly(s.nextRunAt, tz, now)}
+                    </div>
+                    <div className="text-[11px] leading-snug text-ink-muted">
+                      {formatCountdown(s.nextRunAt, now, tz)}
+                    </div>
+                  </div>
                   {s.cronExpression && (
-                    <div className="font-mono text-[11px] text-accent">
+                    <div className="font-mono text-[11px] text-accent sm:col-start-3 sm:row-start-1">
                       {s.cronExpression}
                     </div>
                   )}
