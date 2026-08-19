@@ -1,8 +1,11 @@
 import { useEffect, useState } from 'react';
 import { ApiError } from '../api/client';
 import * as schedulerApi from '../api/scheduler';
+import { useNow } from '../hooks/useNow';
 import {
   epochToLocalInput,
+  formatCountdown,
+  formatFriendly,
   formatInZone,
   parseLocalInputInZone,
 } from '../lib/dates';
@@ -44,6 +47,8 @@ export function EditScheduleModal({ message, timezone, onClose, onSaved }: Props
   const [previewRuns, setPreviewRuns] = useState<number[]>([]);
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // Before the `if (!message)` bail-out below — hooks can't be conditional.
+  const now = useNow();
 
   useEffect(() => {
     if (!message) return;
@@ -162,20 +167,29 @@ export function EditScheduleModal({ message, timezone, onClose, onSaved }: Props
         </Field>
 
         {message.scheduleType === 'once' && (
-          <Field
-            label="Send at"
-            error={
-              runAtLocal !== '' && !runAtFuture
-                ? 'Must be in the future'
-                : undefined
-            }
-          >
-            <Input
-              type="datetime-local"
-              value={runAtLocal}
-              onChange={(e) => setRunAtLocal(e.target.value)}
-              disabled={busy}
-            />
+          <Field label="Send at">
+            <>
+              <Input
+                type="datetime-local"
+                value={runAtLocal}
+                onChange={(e) => setRunAtLocal(e.target.value)}
+                disabled={busy}
+              />
+              {/* Replaces the old bare "Must be in the future" — same warning,
+                  but it also confirms which day the input actually resolved to.
+                  Keyed off `runAtFuture` so it can never disagree with Save. */}
+              {parsedRunAt !== null && (
+                <span
+                  className={`mt-1.5 block text-[12px] ${
+                    runAtFuture ? 'text-ink-soft' : 'text-accent-warm'
+                  }`}
+                >
+                  {runAtFuture
+                    ? `→ ${formatFriendly(parsedRunAt, timezone, now)} (${formatCountdown(parsedRunAt, now)})`
+                    : `→ ${formatFriendly(parsedRunAt, timezone, now)} — that time has already passed`}
+                </span>
+              )}
+            </>
           </Field>
         )}
 

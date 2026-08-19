@@ -1,6 +1,9 @@
 import type { UserPublic } from '../lib/types';
 import { apiRequest } from './client';
 
+/** Admin never sees a password — provisioning yields a single-use setup link. */
+type InviteIssued = { user: UserPublic; invite: { url: string; expiresAt: number } };
+
 export function list() {
   return apiRequest<{ users: UserPublic[] }>('/api/users');
 }
@@ -12,7 +15,7 @@ type CreateInput = {
 };
 
 export function create(input: CreateInput) {
-  return apiRequest<{ user: UserPublic; tempPassword: string }>('/api/users', {
+  return apiRequest<InviteIssued>('/api/users', {
     method: 'POST',
     body: input,
   });
@@ -27,10 +30,9 @@ export function enable(id: string) {
 }
 
 export function resetPassword(id: string) {
-  return apiRequest<{ user: UserPublic; tempPassword: string }>(
-    `/api/users/${id}/reset-password`,
-    { method: 'POST' },
-  );
+  return apiRequest<InviteIssued>(`/api/users/${id}/reset-password`, {
+    method: 'POST',
+  });
 }
 
 export function remove(id: string) {

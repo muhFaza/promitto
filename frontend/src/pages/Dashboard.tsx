@@ -5,7 +5,8 @@ import type { WaStatus } from '../api/wa';
 import { ComposeScheduleForm } from '../components/ComposeScheduleForm';
 import { InstallButton } from '../components/InstallButton';
 import { WaStatusDot } from '../components/WaStatusIndicator';
-import { formatInZone } from '../lib/dates';
+import { useNow } from '../hooks/useNow';
+import { formatCountdown, formatFriendly, formatInZone } from '../lib/dates';
 import type { ScheduledMessage } from '../lib/types';
 import { useAuthStore } from '../stores/auth';
 import { useWaStore } from '../stores/wa';
@@ -62,6 +63,8 @@ export function Dashboard() {
   );
 
   const tz = user?.timezone ?? 'UTC';
+  // One timer for the whole list; per-row calls would multiply timers for nothing.
+  const now = useNow();
   const [nextUp, setNextUp] = useState<ScheduledMessage[]>([]);
   const [totalUpcoming, setTotalUpcoming] = useState(0);
 
@@ -210,10 +213,18 @@ export function Dashboard() {
               {nextUp.map((s) => (
                 <li
                   key={s.id}
-                  className="grid grid-cols-[auto_1fr] items-baseline gap-x-5 gap-y-1 py-3 sm:grid-cols-[130px_1fr_auto]"
+                  className="grid grid-cols-1 items-baseline gap-x-5 gap-y-1 py-3 sm:grid-cols-[205px_1fr_auto]"
                 >
-                  <div className="font-mono text-[12px] text-ink-muted">
-                    {formatInZone(s.nextRunAt, tz)}
+                  {/* No font-mono: "Tomorrow" is prose, and mono is reserved
+                      for machine output. The exact timestamp stays one hover
+                      away rather than being spelled out on every row. */}
+                  <div title={formatInZone(s.nextRunAt, tz)}>
+                    <div className="text-[12px] leading-snug text-ink-soft">
+                      {formatFriendly(s.nextRunAt, tz, now)}
+                    </div>
+                    <div className="text-[11px] leading-snug text-ink-muted">
+                      {formatCountdown(s.nextRunAt, now)}
+                    </div>
                   </div>
                   <div className="min-w-0">
                     <div className="truncate text-sm font-medium text-ink">
