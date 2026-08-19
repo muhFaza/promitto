@@ -185,7 +185,7 @@ export function EditScheduleModal({ message, timezone, onClose, onSaved }: Props
                   }`}
                 >
                   {runAtFuture
-                    ? `→ ${formatFriendly(parsedRunAt, timezone, now)} (${formatCountdown(parsedRunAt, now)})`
+                    ? `→ ${formatFriendly(parsedRunAt, timezone, now)} (${formatCountdown(parsedRunAt, now, timezone)})`
                     : `→ ${formatFriendly(parsedRunAt, timezone, now)} — that time has already passed`}
                 </span>
               )}

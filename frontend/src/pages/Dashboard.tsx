@@ -223,7 +223,7 @@ export function Dashboard() {
                       {formatFriendly(s.nextRunAt, tz, now)}
                     </div>
                     <div className="text-[11px] leading-snug text-ink-muted">
-                      {formatCountdown(s.nextRunAt, now)}
+                      {formatCountdown(s.nextRunAt, now, tz)}
                     </div>
                   </div>
                   <div className="min-w-0">

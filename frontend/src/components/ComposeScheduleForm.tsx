@@ -264,7 +264,7 @@ export function ComposeScheduleForm({ onCreated }: Props) {
                 >
                   {runAtIsPast
                     ? `→ ${formatFriendly(runAtMs, tz, now)} — that time has already passed`
-                    : `→ ${formatFriendly(runAtMs, tz, now)} (${formatCountdown(runAtMs, now)})`}
+                    : `→ ${formatFriendly(runAtMs, tz, now)} (${formatCountdown(runAtMs, now, tz)})`}
                 </span>
               )}
             </>
