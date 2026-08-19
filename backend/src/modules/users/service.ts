@@ -4,6 +4,7 @@ import { env } from '../../config/env.js';
 import { db, sqlite } from '../../db/client.js';
 import { users, type User } from '../../db/schema.js';
 import { hashPassword } from '../../lib/password.js';
+import { DEFAULT_RETENTION_DAYS } from '../privacy/retention.js';
 
 export function listUsers(): User[] {
   return db.select().from(users).orderBy(users.createdAt).all();
@@ -53,6 +54,8 @@ export async function createUser(input: CreateUserInput): Promise<User> {
       timezone: input.timezone ?? env.DEFAULT_TIMEZONE,
       passwordHash,
       mustChangePassword: input.mustChangePassword ?? false,
+      // Explicit rather than leaning on the column default — see schema.ts.
+      retentionDays: DEFAULT_RETENTION_DAYS,
     })
     .returning()
     .all();

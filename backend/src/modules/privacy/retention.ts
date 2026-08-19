@@ -12,6 +12,18 @@ const DAY_MS = 86_400_000;
 // edit, or a future bug is the case this guards against — not the HTTP path.
 const ALLOWED_RETENTION_DAYS: ReadonlySet<number> = new Set([7, 30, 60, 90, 180]);
 
+/**
+ * The window a new account starts on, and the value migration 0009 moved the
+ * grandfathered accounts to.
+ *
+ * This is NOT the column's DDL default, which is still 60 (see schema.ts).
+ * SQLite cannot ALTER a column default, so raising it there would rebuild the
+ * `users` table underneath five cascading child tables on a database with no
+ * backups. `createUser` passes this explicitly instead — that is the only
+ * insert site, so the DDL default is unreachable in practice.
+ */
+export const DEFAULT_RETENTION_DAYS = 180;
+
 export type SweepCounts = { sentMessages: number; scheduledMessages: number };
 
 /**

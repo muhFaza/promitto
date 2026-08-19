@@ -64,6 +64,13 @@
       "when": 1787123507713,
       "tag": "0008_cultured_valeria_richards",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1787128140049,
+      "tag": "0009_striped_wolverine",
+      "breakpoints": true
     }
   ]
 }

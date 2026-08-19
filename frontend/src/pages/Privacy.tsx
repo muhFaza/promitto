@@ -135,7 +135,7 @@ export function Privacy() {
         <p className="mt-3 text-sm leading-relaxed text-ink-soft">
           Sent history and finished one-off schedules are deleted permanently after a
           retention period you choose in Settings: 7, 30, 60, 90 or 180 days. The default is
-          60 days. There is no unlimited option, on purpose.
+          180 days. There is no unlimited option, on purpose.
         </p>
         <p className="mt-3 text-sm leading-relaxed text-ink-soft">
           Schedules that have not run yet and recurring schedules are live configuration, so
