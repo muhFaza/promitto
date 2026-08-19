@@ -3,7 +3,6 @@ import { Link } from 'react-router-dom';
 import { ApiError } from '../api/client';
 import * as schedulerApi from '../api/scheduler';
 import { EditScheduleModal } from '../components/EditScheduleModal';
-import { AppHeader } from '../components/ui/AppHeader';
 import { Badge } from '../components/ui/Badge';
 import { Button } from '../components/ui/Button';
 import { Spinner } from '../components/ui/Spinner';
@@ -100,7 +99,6 @@ export function Schedule() {
 
   return (
     <>
-      <AppHeader />
       <main className="mx-auto max-w-5xl px-6 pb-24 pt-10">
         <header className="flex flex-wrap items-end justify-between gap-4">
           <div>

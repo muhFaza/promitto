@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import { ApiError } from '../api/client';
 import * as usersApi from '../api/users';
-import { AppHeader } from '../components/ui/AppHeader';
 import { Badge } from '../components/ui/Badge';
 import { Button } from '../components/ui/Button';
 import { Field } from '../components/ui/Field';
@@ -106,7 +105,6 @@ export function Admin() {
 
   return (
     <>
-      <AppHeader />
       <main className="mx-auto max-w-5xl px-6 pb-24 pt-10">
         <header className="flex flex-wrap items-end justify-between gap-4">
           <div>

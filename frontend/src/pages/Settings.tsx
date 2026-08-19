@@ -1,7 +1,6 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { ApiError } from '../api/client';
 import * as settingsApi from '../api/settings';
-import { AppHeader } from '../components/ui/AppHeader';
 import { Button } from '../components/ui/Button';
 import { Field } from '../components/ui/Field';
 import { Input } from '../components/ui/Input';
@@ -84,115 +83,112 @@ export function Settings() {
   }
 
   return (
-    <>
-      <AppHeader />
-      <main className="mx-auto max-w-2xl space-y-12 px-6 pb-24 pt-10">
-        <header>
-          <div className="eyebrow">Profile · security</div>
-          <h1 className="mt-2 font-display text-4xl italic leading-none text-ink">
-            Settings
-          </h1>
-        </header>
+    <main className="mx-auto max-w-2xl space-y-12 px-6 pb-24 pt-10">
+      <header>
+        <div className="eyebrow">Profile · security</div>
+        <h1 className="mt-2 font-display text-4xl italic leading-none text-ink">
+          Settings
+        </h1>
+      </header>
 
-        {mustChange && (
-          <div
-            className="border-l-2 border-accent-warm bg-amber-soft/30 px-4 py-3 text-[13px] text-ink"
-            role="alert"
+      {mustChange && (
+        <div
+          className="border-l-2 border-accent-warm bg-amber-soft/30 px-4 py-3 text-[13px] text-ink"
+          role="alert"
+        >
+          <div className="eyebrow text-accent-warm">Action required</div>
+          <p className="mt-1">
+            Set a new password before you can continue. Temporary passwords are
+            single-use.
+          </p>
+        </div>
+      )}
+
+      <section className={`${mustChange ? 'pointer-events-none opacity-40 ' : ''}border-y border-rule py-8`}>
+        <div className="eyebrow">Timezone</div>
+        <h2 className="mt-1 font-display text-2xl italic text-ink">
+          Where does "now" mean now.
+        </h2>
+        <p className="mt-2 max-w-md text-[13px] text-ink-soft">
+          Schedules are interpreted in this timezone. Changing it only affects future
+          schedules — existing ones keep the zone they were created in.
+        </p>
+        <form className="mt-6 space-y-4" onSubmit={handleTz}>
+          <Field label="IANA timezone">
+            <Input
+              type="text"
+              value={tz}
+              onChange={(e) => setTz(e.target.value)}
+              list="timezones-list"
+              placeholder="e.g. Asia/Jakarta"
+              required
+            />
+            <datalist id="timezones-list">
+              {timezones.map((z) => (
+                <option key={z} value={z} />
+              ))}
+            </datalist>
+          </Field>
+          <Button
+            type="submit"
+            disabled={tzBusy || !tz || tz === user?.timezone}
           >
-            <div className="eyebrow text-accent-warm">Action required</div>
-            <p className="mt-1">
-              Set a new password before you can continue. Temporary passwords are
-              single-use.
-            </p>
-          </div>
-        )}
+            {tzBusy ? <Spinner /> : 'Save timezone →'}
+          </Button>
+        </form>
+      </section>
 
-        <section className={`${mustChange ? 'pointer-events-none opacity-40 ' : ''}border-y border-rule py-8`}>
-          <div className="eyebrow">Timezone</div>
-          <h2 className="mt-1 font-display text-2xl italic text-ink">
-            Where does "now" mean now.
-          </h2>
-          <p className="mt-2 max-w-md text-[13px] text-ink-soft">
-            Schedules are interpreted in this timezone. Changing it only affects future
-            schedules — existing ones keep the zone they were created in.
-          </p>
-          <form className="mt-6 space-y-4" onSubmit={handleTz}>
-            <Field label="IANA timezone">
-              <Input
-                type="text"
-                value={tz}
-                onChange={(e) => setTz(e.target.value)}
-                list="timezones-list"
-                placeholder="e.g. Asia/Jakarta"
-                required
-              />
-              <datalist id="timezones-list">
-                {timezones.map((z) => (
-                  <option key={z} value={z} />
-                ))}
-              </datalist>
-            </Field>
-            <Button
-              type="submit"
-              disabled={tzBusy || !tz || tz === user?.timezone}
+      <section className="border-b border-rule pb-8">
+        <div className="eyebrow">Password</div>
+        <h2 className="mt-1 font-display text-2xl italic text-ink">
+          Rotate the key.
+        </h2>
+        <p className="mt-2 max-w-md text-[13px] text-ink-soft">
+          Changing your password revokes all other sessions immediately.
+        </p>
+        <form className="mt-6 space-y-4" onSubmit={handlePw}>
+          <Field label="Current password">
+            <Input
+              type="password"
+              value={currentPw}
+              onChange={(e) => setCurrentPw(e.target.value)}
+              required
+              autoComplete="current-password"
+            />
+          </Field>
+          <Field label="New password">
+            <Input
+              type="password"
+              value={newPw}
+              onChange={(e) => setNewPw(e.target.value)}
+              required
+              minLength={12}
+              autoComplete="new-password"
+            />
+          </Field>
+          <Field label="Confirm new password">
+            <Input
+              type="password"
+              value={newPw2}
+              onChange={(e) => setNewPw2(e.target.value)}
+              required
+              minLength={12}
+              autoComplete="new-password"
+            />
+          </Field>
+          {pwError && (
+            <div
+              className="border-l-2 border-accent-warm bg-accent-warm-soft/40 px-3 py-2 text-[12px] text-accent-warm"
+              role="alert"
             >
-              {tzBusy ? <Spinner /> : 'Save timezone →'}
-            </Button>
-          </form>
-        </section>
-
-        <section className="border-b border-rule pb-8">
-          <div className="eyebrow">Password</div>
-          <h2 className="mt-1 font-display text-2xl italic text-ink">
-            Rotate the key.
-          </h2>
-          <p className="mt-2 max-w-md text-[13px] text-ink-soft">
-            Changing your password revokes all other sessions immediately.
-          </p>
-          <form className="mt-6 space-y-4" onSubmit={handlePw}>
-            <Field label="Current password">
-              <Input
-                type="password"
-                value={currentPw}
-                onChange={(e) => setCurrentPw(e.target.value)}
-                required
-                autoComplete="current-password"
-              />
-            </Field>
-            <Field label="New password">
-              <Input
-                type="password"
-                value={newPw}
-                onChange={(e) => setNewPw(e.target.value)}
-                required
-                minLength={12}
-                autoComplete="new-password"
-              />
-            </Field>
-            <Field label="Confirm new password">
-              <Input
-                type="password"
-                value={newPw2}
-                onChange={(e) => setNewPw2(e.target.value)}
-                required
-                minLength={12}
-                autoComplete="new-password"
-              />
-            </Field>
-            {pwError && (
-              <div
-                className="border-l-2 border-accent-warm bg-accent-warm-soft/40 px-3 py-2 text-[12px] text-accent-warm"
-                role="alert"
-              >
-                {pwError}
-              </div>
-            )}
-            <Button type="submit" disabled={pwBusy}>
-              {pwBusy ? <Spinner /> : 'Change password →'}
-            </Button>
-          </form>
-        </section>
-      </main>
-    </>
+              {pwError}
+            </div>
+          )}
+          <Button type="submit" disabled={pwBusy}>
+            {pwBusy ? <Spinner /> : 'Change password →'}
+          </Button>
+        </form>
+      </section>
+    </main>
   );
 }
