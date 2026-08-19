@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { randomBytes } from 'node:crypto';
 import { env } from '../../config/env.js';
 import { errors } from '../../lib/errors.js';
+import { logger } from '../../lib/logger.js';
 import { isValidIanaTimezone } from '../../lib/timezone.js';
 import { serializeUser } from '../../lib/user.js';
 import { requireAuth, requireSuperuser } from '../../middleware/auth.js';
@@ -10,6 +11,7 @@ import { requireCsrf } from '../../middleware/csrf.js';
 import { requirePasswordRotated } from '../../middleware/password-gate.js';
 import { deleteAllSessionsForUser } from '../auth/service.js';
 import { issueInvite } from '../invites/service.js';
+import { sessionManager } from '../wa-sessions/manager.js';
 import {
   createUser,
   deleteUserById,
@@ -141,14 +143,32 @@ usersRouter.post('/:id/reset-password', async (req, res, next) => {
   }
 });
 
-usersRouter.delete('/:id', (req, res, next) => {
+usersRouter.delete('/:id', async (req, res, next) => {
   try {
     const id = req.params.id;
     const user = findUserById(id);
     if (!user) throw errors.notFound('user');
     if (!req.user) throw errors.unauthorized();
     if (user.id === req.user.id) throw errors.badRequest('You cannot delete yourself');
+
+    // Same teardown as the self-delete path in settings/routes.ts, and for the
+    // same reasons — an admin-deleted account must not leave more behind than a
+    // self-deleted one. Unlink the device so the user's phone stops listing a
+    // Promitto session for an account that no longer exists. A WhatsApp failure
+    // must never block the deletion; the local data still goes.
+    try {
+      await sessionManager.disconnect(id, { logout: true });
+    } catch (err) {
+      logger.warn({ err, userId: id }, 'wa logout failed during admin account deletion');
+    }
+
+    // Filesystem BEFORE the DB row — the order is load-bearing, see the long
+    // note on the self-delete route. The reverse leaves Baileys credentials on
+    // disk with no row pointing at them and nothing that ever prunes them.
+    await sessionManager.purgeAuthState(id);
+
     deleteUserById(id);
+    logger.info({ userId: id, email: user.email, by: req.user.id }, 'account deleted by admin');
     res.status(204).end();
   } catch (err) {
     next(err);

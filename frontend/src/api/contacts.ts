@@ -25,6 +25,13 @@ export function rename(id: string, displayName: string) {
   });
 }
 
+export function purgeSynced() {
+  return apiRequest<{ deleted: number; cleared: number }>(
+    '/api/contacts/purge-synced',
+    { method: 'POST' },
+  );
+}
+
 export function remove(id: string) {
   return apiRequest<void>(`/api/contacts/${id}`, { method: 'DELETE' });
 }

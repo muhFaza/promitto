@@ -17,6 +17,7 @@ import { env } from '../../config/env.js';
 import { isUserJid, phoneFromJid } from '../../lib/jid.js';
 import { logger } from '../../lib/logger.js';
 import * as contactsService from '../contacts/service.js';
+import { isContactSyncEnabled } from '../users/service.js';
 import {
   getConnection,
   listRestorable,
@@ -817,29 +818,49 @@ class SessionManager {
       );
     }
 
-    if (h.pendingInteractions.size > 0) {
-      const batch = new Map(h.pendingInteractions);
-      h.pendingInteractions.clear();
+    // Drain first, unconditionally, before anything that can throw. The events
+    // keep arriving whatever our settings say or the database does, so any
+    // early return or exception above this point grows both buffers for the
+    // life of the process.
+    const interactions =
+      h.pendingInteractions.size > 0 ? new Map(h.pendingInteractions) : null;
+    const pins = h.pendingPins.size > 0 ? new Map(h.pendingPins) : null;
+    h.pendingInteractions.clear();
+    h.pendingPins.clear();
+    if (!interactions && !pins) return;
+
+    // Read once per flush, not per batch, so recency and pins can't disagree
+    // about the toggle within a single drain. A failed read drops this batch —
+    // the buffers are already empty, and persisting on an unknown toggle would
+    // be writing contact data the user may have opted out of.
+    let syncEnabled: boolean;
+    try {
+      syncEnabled = isContactSyncEnabled(h.userId);
+    } catch (err) {
+      logger.warn(
+        { err, userId: h.userId },
+        'contact sync toggle read failed — dropping recency batch',
+      );
+      return;
+    }
+    if (!syncEnabled) return;
+
+    if (interactions) {
       try {
-        contactsService.recordInteractions(h.userId, batch);
+        contactsService.recordInteractions(h.userId, interactions);
       } catch (err) {
         logger.warn(
-          { err, userId: h.userId, count: batch.size },
+          { err, userId: h.userId, count: interactions.size },
           'recordInteractions flush failed',
         );
       }
     }
 
-    if (h.pendingPins.size > 0) {
-      const batch = new Map(h.pendingPins);
-      h.pendingPins.clear();
+    if (pins) {
       try {
-        contactsService.recordPinStates(h.userId, batch);
+        contactsService.recordPinStates(h.userId, pins);
       } catch (err) {
-        logger.warn(
-          { err, userId: h.userId, count: batch.size },
-          'recordPinStates flush failed',
-        );
+        logger.warn({ err, userId: h.userId, count: pins.size }, 'recordPinStates flush failed');
       }
     }
   }
@@ -891,6 +912,27 @@ class SessionManager {
 
     const entries = Array.from(h.pendingContacts.values());
     h.pendingContacts.clear();
+
+    // Gate is checked after the drain, never before it: Baileys keeps streaming
+    // contacts.upsert regardless of our setting, so returning early would leave
+    // the buffer to grow for the life of the process. The read is wrapped for
+    // the same reason flushPendingRecency wraps its own: this runs from a timer
+    // callback, so an exception here reaches the process-wide
+    // uncaughtException handler and shuts the whole server down. A failed read
+    // drops this batch — the buffer is already empty, and persisting on an
+    // unknown toggle would be writing contact data the user may have opted out
+    // of.
+    let syncEnabled: boolean;
+    try {
+      syncEnabled = isContactSyncEnabled(h.userId);
+    } catch (err) {
+      logger.warn(
+        { err, userId: h.userId, count: entries.length },
+        'contact sync toggle read failed — dropping contact batch',
+      );
+      return;
+    }
+    if (!syncEnabled) return;
 
     for (const e of entries) {
       try {
@@ -1690,6 +1732,57 @@ class SessionManager {
   // from a socket we already replaced, or from a transient server-side state —
   // so the credentials are moved aside for a human instead of erased. Nothing
   // prunes the leftovers on purpose; silent deletion is the thing being removed.
+  /**
+   * The one path that actually erases credentials: account deletion, where the
+   * user has asked in as many words for everything to be gone. Removes the live
+   * auth dir *and* every `{userId}.revoked-*` copy wipeAuthState moved aside on
+   * earlier revocations — those are exactly the Baileys creds the user is
+   * asking us to stop holding, and nothing else prunes them.
+   *
+   * Deliberately not a regex over `userId`: plain string comparison on the
+   * directory listing, so an id containing regex metacharacters can never widen
+   * the match to another user's directory.
+   *
+   * Runs *before* the row is deleted, on both delete paths (the user's own
+   * DELETE /api/settings/account and the admin's DELETE /api/users/:id), and
+   * that order is deliberate — do not "tidy" it to run after. A crash between
+   * the two steps has to leave something inconsistent; this direction leaves a
+   * live account whose pairing is gone, which re-pairing or deleting again
+   * fixes. The reverse leaves credentials on disk with no row pointing at them,
+   * no retry path and nothing that ever prunes them.
+   *
+   * Never throws, precisely because it is now the step in front of the delete:
+   * a filesystem failure here must not block the account from being removed. It
+   * logs loudly instead.
+   */
+  async purgeAuthState(userId: string): Promise<void> {
+    const root = env.SESSIONS_DIR;
+    const revokedPrefix = `${userId}.revoked-`;
+
+    let entries: string[];
+    try {
+      entries = await fs.readdir(root);
+    } catch (err) {
+      // A missing SESSIONS_DIR means there is nothing to purge.
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+        logger.warn({ err, root, userId }, 'read sessions dir failed during auth state purge');
+      }
+      return;
+    }
+
+    const targets = entries.filter((e) => e === userId || e.startsWith(revokedPrefix));
+    for (const entry of targets) {
+      try {
+        await fs.rm(path.join(root, entry), { recursive: true, force: true });
+      } catch (err) {
+        logger.error({ err, root, entry, userId }, 'purge auth state entry failed');
+      }
+    }
+    if (targets.length > 0) {
+      logger.info({ userId, removed: targets.length }, 'wa auth state purged for deleted account');
+    }
+  }
+
   private async wipeAuthState(dir: string): Promise<void> {
     const target = `${dir}.revoked-${basicIsoStamp(new Date())}`;
     try {

@@ -48,6 +48,16 @@ contactsRouter.get('/recent', (req, res, next) => {
   }
 });
 
+// Above every `/:id` route so the literal path wins the match.
+contactsRouter.post('/purge-synced', (req, res, next) => {
+  try {
+    if (!req.user) throw errors.unauthorized();
+    res.json(service.purgeSynced(req.user.id));
+  } catch (err) {
+    next(err);
+  }
+});
+
 function isHttpsUrl(url: string): boolean {
   try {
     return new URL(url).protocol === 'https:';

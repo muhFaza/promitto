@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { and, asc, eq, isNull, like, lt, or, sql } from 'drizzle-orm';
+import { and, asc, eq, isNotNull, isNull, like, lt, or, sql } from 'drizzle-orm';
 import { db, sqlite } from '../../db/client.js';
 import { contacts, scheduledMessages, type Contact } from '../../db/schema.js';
 
@@ -249,6 +249,40 @@ export function recordPinStates(
           .where(and(eq(contacts.userId, userId), eq(contacts.jid, jid)))
           .run();
       }
+    })
+    .immediate();
+}
+
+/**
+ * Remove everything contact syncing produced. Synced rows go entirely; manual
+ * rows are kept but stripped of the behavioural fields, because interaction
+ * recency and WhatsApp pin state are fed by WA events on manual contacts too
+ * and would otherwise survive a "delete my synced data" as a standing record of
+ * who the user talks to and when.
+ *
+ * One transaction: a half-applied purge that deleted the synced rows but left
+ * the recency on the manual ones is exactly the leak this closes.
+ */
+export function purgeSynced(userId: string): { deleted: number; cleared: number } {
+  return sqlite
+    .transaction((): { deleted: number; cleared: number } => {
+      const deleted = db
+        .delete(contacts)
+        .where(and(eq(contacts.userId, userId), eq(contacts.source, 'synced')))
+        .run();
+      // updatedAt is deliberately left alone — it means "last user edit", and
+      // this is not one (same reasoning as recordInteractions/recordPinStates).
+      const cleared = db
+        .update(contacts)
+        .set({ lastInteractionAt: null, waPinnedAt: null })
+        .where(
+          and(
+            eq(contacts.userId, userId),
+            or(isNotNull(contacts.lastInteractionAt), isNotNull(contacts.waPinnedAt)),
+          ),
+        )
+        .run();
+      return { deleted: deleted.changes, cleared: cleared.changes };
     })
     .immediate();
 }

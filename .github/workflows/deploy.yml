@@ -40,6 +40,30 @@ jobs:
           test -n "$KEY"   || { echo "::error::VPS_SSH_KEY is not set"; exit 1; }
           test -n "$HOSTS" || { echo "::error::VPS_KNOWN_HOSTS is not set"; exit 1; }
 
+      # Before anything is built or shipped. The suites cover the paths that
+      # delete production data (retention sweep, last-superuser guard) and the
+      # Baileys patch that keeps sessions isolated — a widened delete predicate
+      # would otherwise compile, deploy and destroy data before anyone thought
+      # to run them by hand. There are no backups; this is the only gate.
+      #
+      # No services needed: each script points DATABASE_PATH at its own
+      # throwaway SQLite file under backend/data, migrates it, and removes it on
+      # the way out. `npm ci` runs patch-package via postinstall, which is what
+      # test-signal-tx-isolation.ts asserts against.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Install backend dependencies
+        working-directory: backend
+        run: npm ci
+
+      - name: Verify
+        working-directory: backend
+        run: npm run verify
+
       - name: Build production image
         run: docker build -t promitto:deploy .
 

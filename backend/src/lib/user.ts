@@ -7,6 +7,8 @@ export type UserPublic = {
   timezone: string;
   disabledAt: number | null;
   mustChangePassword: boolean;
+  retentionDays: number;
+  contactSyncEnabled: boolean;
   createdAt: number;
   updatedAt: number;
 };
@@ -19,6 +21,8 @@ export function serializeUser(u: User): UserPublic {
     timezone: u.timezone,
     disabledAt: u.disabledAt ? u.disabledAt.getTime() : null,
     mustChangePassword: u.mustChangePassword,
+    retentionDays: u.retentionDays,
+    contactSyncEnabled: u.contactSyncEnabled,
     createdAt: u.createdAt.getTime(),
     updatedAt: u.updatedAt.getTime(),
   };

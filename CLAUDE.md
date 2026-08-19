@@ -23,13 +23,18 @@ docker compose exec backend npm run db:migrate
 docker compose exec backend npm run cli:create-superuser
 docker compose exec backend npm run cli:reset-superuser-password
 
+docker compose exec backend npm run verify                # all five suites, fail-fast
 docker compose exec backend npx tsx scripts/test-interaction-flush.ts   # recents assertions
+docker compose exec backend npx tsx scripts/test-retention-sweep.ts     # retention assertions
+docker compose exec backend npx tsx scripts/test-ip-anonymize.ts        # IP coarsening assertions
 docker compose exec frontend npx tsx scripts/test-dates.ts             # date/countdown assertions
 ```
 
-**There is no test framework.** No `test` script, no runner, no `*.test.ts` anywhere — so there is no "run a single test". Verification is `typecheck` + `lint` + exercising the app. If you add tests, you are also picking the runner; say so rather than assuming one exists.
+**There is no test framework.** No runner, no `*.test.ts` anywhere — so there is no "run a single test". `npm run verify` is a plain `&&` chain of the five standalone suites (`test-ip-anonymize`, `test-superuser-guard`, `test-retention-sweep`, `test-interaction-flush`, `test-signal-tx-isolation`), fail-fast, each with its own throwaway SQLite file. **`.github/workflows/deploy.yml` runs it before the image is built**, so a change that widens the retention delete predicate fails the deploy instead of reaching production — that gate is the closest thing to a backup this project has. Verification is `verify` + `typecheck` + `lint` + exercising the app. If you add tests, you are also picking the runner; say so rather than assuming one exists.
 
 `scripts/test-seed-superuser.ts` and `scripts/test-reset-superuser.ts` are **not** tests — they are non-interactive stand-ins for the `@inquirer/prompts` CLIs (which need a TTY), e.g. `tsx scripts/test-seed-superuser.ts <email> <password>`.
+
+`scripts/test-interaction-flush.ts`, `scripts/test-retention-sweep.ts` and `scripts/test-ip-anonymize.ts` **are** real verification suites despite sharing that prefix. The IP one needs no database — `anonymizeIp` is pure — and is mostly rejection cases, because a fabricated prefix is indistinguishable from a real one once it is in `sessions.ip`. The retention one asserts that expired history is deleted while active and recurring schedules survive, that tenancy holds, and that dry-run deletes nothing — run it after touching `modules/privacy/retention.ts`. As for the recents one: 9 `node:assert/strict` assertions over `recordInteractions` / `recordPinStates` / `listRecent`, against a throwaway SQLite file it migrates and deletes (never the dev DB), exiting 1 on the first failure. Run it after touching recency, pin mirroring, or the recents query. It is still not a *framework* — no runner, no discovery, and nothing else is covered.
 
 `frontend/scripts/test-dates.ts` is the same idea on the frontend: 28 assertions over `formatFriendly` / `formatCountdown` against a pinned `now`, covering calendar-day boundaries, the year rollover, and every rung of the countdown ladder. Run it after touching either helper. It exists because that logic already shipped a real bug — a single-unit countdown read "in 1 day" directly beneath a date two days out — and only a pinned `now` can prove the two helpers agree.
 
@@ -63,9 +68,9 @@ Routers and their gating (`A` = `requireAuth`, `P` = `requirePasswordRotated`, `
 | `/api/users` | `A` + `P` + `C` + `requireSuperuser` | list/create/disable/enable/reset-password/delete — both create and reset return an invite link, never a password |
 | `/api/invite` | **none** | `GET /:token` (lookup), `POST /:token` (set password + sign in). Public and CSRF-exempt on purpose — see Auth model |
 | `/api/wa` | `A` + `P` + `C` | `connect`, `disconnect`, `logout`, `status`, `events` (SSE) |
-| `/api/contacts` | `A` + `P` + `C` | list (search, limit capped 200), `recent` (WA-pinned first, then interaction recency, limit capped 50), create, rename, `GET /:id/avatar` (302 to the WA CDN, or 404), delete |
+| `/api/contacts` | `A` + `P` + `C` | list (search, limit capped 200), `recent` (WA-pinned first, then interaction recency, limit capped 50), create, rename, `GET /:id/avatar` (302 to the WA CDN, or 404), `POST /purge-synced` (registered above `/:id` so the literal path wins), delete |
 | `/api/scheduler` | `A` + `P` + `C` | create, list (`?status=upcoming\|recurring\|history\|failed`), `stats`, `preview`, patch, cancel |
-| `/api/settings` | `A` + `C`, `P` per-route | password, timezone, timezone list (`GET /timezones` un-gated by `P` on purpose) |
+| `/api/settings` | `A` + `C`, `P` per-route | password, timezone, timezone list (`GET /timezones` un-gated by `P` on purpose), `retention`, `contact-sync`, `purge-data`, `DELETE /account` |
 
 Every module follows `routes.ts` (zod parsing + HTTP) → `service.ts` (Drizzle, synchronous better-sqlite3). Services take `userId` as the first argument and scope every query by it — that per-query `userId` filter *is* the tenancy boundary; there is no row-level security underneath it.
 
@@ -185,6 +190,114 @@ Aesthetic: **"quiet utility ledger"** — warm paper + ink, deliberate typograph
 - **Motion**: CSS-only (`animate-fadeInUp`, `animate-ping` on pending WA status). Don't add framer-motion.
 - **Icons are inlined SVG paths, not a package.** The recents pin marker is one Material Symbols `push_pin` path in `ContactQuickPick.tsx`, drawn upright and rotated `-45deg` at the call site (upright it reads as a generic marker; the tilt is what makes it WhatsApp's pinned-chat glyph). It is `text-ink-muted`, deliberately **not** `accent` — a mirrored pin is a neutral marker, not a status. Adding an icon dependency for the next glyph is a decision, not a default.
 - **Avatars render initials *behind* the photo**, never as an on-error swap: the `<img>` is absolutely positioned over the initials and hides itself via `onError`, so a slow or missing picture degrades to initials with no broken-image glyph flash. `/api/contacts/:id/avatar` 404s identically for no photo, a privacy-blocked photo, and a disconnected session — all silent.
+
+## Privacy & retention
+
+The operator has root on the box and the scheduler must hold plaintext to send while the user
+is offline, so **no app-level change hides message content from the operator** — don't add one
+and don't let the UI imply otherwise. What this layer does instead is bound how much data
+exists, for how long, and make all of it user-deletable. `/privacy` (public, registered before
+the `*` catch-all and outside `RequireAuth`) states this plainly; keep it accurate if you
+change what is stored.
+
+- **Two `users` columns drive it**: `retention_days` (default 60; allowed 7/30/60/90/180, and
+  there is deliberately **no unlimited option**) and `contact_sync_enabled` (default true —
+  grandfathered ON, so this is honestly opt-*out*, not opt-in).
+- **`modules/privacy/retention.ts`** sweeps every 6h plus once at boot, following the poller's
+  singleton/re-entrancy idiom. It deletes `sent_messages` older than the cutoff and
+  `scheduled_messages` where **`is_active = 0 AND schedule_type = 'once'`** older than the
+  cutoff. Active rows and *every* recurring row survive regardless of age — a recurring
+  schedule is live configuration, not history. **That predicate is the most dangerous line in
+  the app**: widen it and you silently delete users' live schedules, and there are no backups.
+  `scripts/test-retention-sweep.ts` asserts it; run it after touching retention.
+- **`sweepUser` validates `retentionDays` itself** — non-negative integer or it throws. The
+  column has no CHECK constraint, and a negative or `NaN` value future-dates the cutoff, which
+  reads as "everything has expired". `0` stays legal: it *is* the user-initiated purge. The
+  periodic sweeper additionally **skips** any user whose stored value isn't 7/30/60/90/180,
+  logging a warning — unattended and destructive is not the place to guess.
+- **Hard delete, not redaction.** A row kept with its text nulled still records who was
+  messaged and when, which is the thing retention exists to stop keeping.
+- **`/api/health` reports the sweeper** under a `retention` key: `lastStartedAt`,
+  `lastCompletedAt`, `lastCounts`, `lastError`, `dryRun`, `running`. An empty pass logs at
+  `debug` and production runs `LOG_LEVEL=info`, so without this a wedged 6h timer and six
+  healthy zero-delete sweeps are indistinguishable — `lastCompletedAt` advancing is the proof
+  it is alive. It follows the same conditional spread as `wa`/`mem` (omitted entirely if the
+  getter throws, never `null`) and **must never influence `status`**, which stays driven by the
+  DB ping alone because `deploy.yml` greps `"status":"ok"` to decide rollback.
+- **`RETENTION_DRY_RUN`** makes the periodic sweep count and log without deleting.
+  **The first production deploy of this feature runs with `RETENTION_DRY_RUN=true` in
+  `~/promitto/.env`** and is armed later by removing that line. The 60-day default is
+  retroactive and the boot sweep fires immediately, so without this window every user
+  loses history older than 60 days before they can choose 90 or 180 — and there are no
+  backups. `docker-compose.prod.yml` passes it through as `${RETENTION_DRY_RUN:-false}`,
+  so the safe state is opt-in and forgetting the .env line arms it rather than disabling it.
+  `sweepUser(id, days, { dryRun: false })` overrides it, and the user-initiated purge pins it
+  false on purpose — an operator flag must never turn "delete my data" into a silent no-op
+  that still reports counts.
+- **Contact syncing is gated at three write sites** in `manager.ts`, not one: the
+  `recordInteractions` and `recordPinStates` flushes (one `isContactSyncEnabled` read per
+  flush, so the two can't disagree mid-drain) and the `upsertSynced` flush. In all three the
+  **buffer is drained before the gate is checked** — Baileys keeps streaming regardless of our
+  setting, so an early return *or a throw* above the clear grows the buffer for the life of the
+  process. Every one of the three `isContactSyncEnabled` reads is also **wrapped in a
+  try/catch**: all three run from timer callbacks, so a DB exception there reaches `main.ts`'s
+  process-wide `uncaughtException` handler and shuts the server down. A failed read drops that
+  batch rather than stranding it or persisting on an unknown toggle.
+  Incoming `messages.upsert` feeds recency through the same flush, so it needs no fourth gate.
+- **`purgeSynced` also nulls `last_interaction_at` and `wa_pinned_at` on the remaining manual
+  contacts.** Deleting only `source = 'synced'` rows would leave a record of who the user talks
+  to and when, after they asked for it to be gone.
+- **Account deletion is user-reachable and unrecoverable**: password + typed `DELETE`, refused
+  with 409 for the last superuser, then a best-effort `disconnect(userId, { logout: true })` to
+  unlink the device from the phone (failure logs and continues — WhatsApp must never block the
+  delete), `sessionManager.purgeAuthState(userId)`, and only then the DB cascade.
+  - **The admin path does the same teardown.** `DELETE /api/users/:id` (`users/routes.ts`) runs
+    the identical disconnect → purge → delete sequence, and is `async` for it. It used to call
+    `deleteUserById` alone, which left the deleted user's Baileys creds in `SESSIONS_DIR`
+    forever, their device still linked to their phone, and a live socket in memory for an
+    account that no longer existed. If you change one path, change both.
+  - **Filesystem before the DB row, and the order is load-bearing.** A crash between the two
+    has to leave something inconsistent: this way the account is still there with its pairing
+    gone, which the user fixes by re-pairing or deleting again. The reverse leaves Baileys
+    credentials on disk with no row pointing at them, no retry path, and nothing that ever
+    prunes them. Don't reorder it back to "cascade, then purge".
+  - The last-superuser check is enforced **inside** `users/service.ts`'s `deleteSelf`, which
+    re-reads the role and re-counts within one `sqlite.transaction().immediate()`. The route's
+    own check is a cheap early exit only: it is separated from the delete by an awaited
+    WhatsApp logout and the auth-state purge, so two concurrent self-deletes could otherwise
+    both pass it and leave the instance with nobody who can manage users. Because the purge now
+    runs first, a 409 from `deleteSelf` means the credentials are already gone and that user
+    must re-pair — the price of the ordering above, and it needs two concurrent deletes to
+    happen at all.
+  - **`countSuperusers` counts only `role = 'superuser' AND disabled_at IS NULL`.** A disabled
+    superuser is rejected by `requireAuth` and cannot re-enable themselves, so counting them
+    would let superuser A disable superuser B and then delete themselves — guard sees two,
+    instance ends up with no usable superuser and no signup path. `scripts/test-superuser-guard.ts`
+    asserts it.
+  - **`purgeAuthState` removes `sessions/{userId}` *and* every `{userId}.revoked-*` sibling**,
+    matched by plain string comparison on the directory listing (never a regex built from an
+    id). Deletion is the only path that erases credentials: `wipeAuthState` deliberately
+    *renames* rather than deletes, because the 401 that triggers it is not always trustworthy
+    and there are no backups — so those copies accumulate, and nothing else prunes them. Don't
+    "fix" `wipeAuthState` into an `rm`; the pruning belongs where the user explicitly asked for
+    everything to be gone.
+- **The three password-confirming settings routes share one per-user token bucket**
+  (`modules/settings/rate-limit.ts`): `POST /password`, `POST /purge-data` and
+  `DELETE /account`, 3 burst with one token back every 30s, 429 `rate_limited` on exhaustion.
+  Each of them runs Argon2id, which allocates ~64 MiB **outside the V8 heap** per verify, on a
+  container capped at `mem_limit: 384m` — a handful of concurrent calls was enough to OOM the
+  process and take the paired WhatsApp session and the scheduler with it. One shared bucket,
+  not three: the cost is per verify, so separate budgets would multiply the thing being
+  bounded. Keyed by user id because all three sit behind `requireAuth`. Mounted per-route, not
+  on the router — the cheap settings writes must not spend an Argon2-sized budget.
+- **Stored IPs are coarsened** to `/24` (v4) or `/48` (v6) by `lib/ip.ts` before they reach
+  `sessions.ip`. The login rate limiter still buckets on the full `req.ip` — it is in-memory
+  and never persisted. Parsing is strict and every failure returns `null`: octets must be 1-3
+  ASCII digits ≤255 (`Number()` would accept `0x10` and `+1`), only one `::` is legal, and
+  bracketed/port forms are handled explicitly. Zone ids are **IPv6-only**, so a `%` on an IPv4
+  (or IPv4-mapped) address rejects rather than being stripped — `1.2.3.4%x` is not an address
+  we understand, and `1.2.3.0/24` would be an invented answer. A `null` is safe to store; an invented
+  prefix looks exactly like a real network. `scripts/test-ip-anonymize.ts` asserts it.
 
 ## Scope — do not expand
 

@@ -1,16 +1,14 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import {
-  CSRF_COOKIE_NAME,
-  SESSION_COOKIE_NAME,
-  SESSION_DURATION_MS,
-} from '../../config/constants.js';
+import { SESSION_COOKIE_NAME, SESSION_DURATION_MS } from '../../config/constants.js';
 import { env } from '../../config/env.js';
 import { sqlite } from '../../db/client.js';
 import { signSessionId } from '../../lib/cookie-signer.js';
 import { setCsrfCookie } from '../../lib/csrf.js';
 import { errors } from '../../lib/errors.js';
+import { anonymizeIp } from '../../lib/ip.js';
 import { verifyPassword } from '../../lib/password.js';
+import { clearSessionCookies } from '../../lib/session-cookies.js';
 import { serializeUser } from '../../lib/user.js';
 import { requireAuth } from '../../middleware/auth.js';
 import { loginEmailBucket, loginIpBucket } from './rate-limit.js';
@@ -69,7 +67,7 @@ authRouter.post('/login', async (req, res, next) => {
       return createSession({
         userId: user.id,
         userAgent: req.headers['user-agent'] ?? null,
-        ip: req.ip ?? null,
+        ip: anonymizeIp(req.ip),
       });
     }).immediate();
 
@@ -98,18 +96,7 @@ authRouter.post('/login', async (req, res, next) => {
 // fails, since the token is HMAC-bound to the victim's session id).
 authRouter.post('/logout', requireAuth, (req, res) => {
   if (req.session) deleteSession(req.session.id);
-  res.clearCookie(SESSION_COOKIE_NAME, {
-    httpOnly: true,
-    sameSite: 'lax',
-    secure: env.NODE_ENV === 'production',
-    path: '/',
-  });
-  res.clearCookie(CSRF_COOKIE_NAME, {
-    httpOnly: false,
-    sameSite: 'lax',
-    secure: env.NODE_ENV === 'production',
-    path: '/',
-  });
+  clearSessionCookies(res);
   res.status(204).end();
 });
 
