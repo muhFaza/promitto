@@ -24,11 +24,14 @@ docker compose exec backend npm run cli:create-superuser
 docker compose exec backend npm run cli:reset-superuser-password
 
 docker compose exec backend npx tsx scripts/test-interaction-flush.ts   # recents assertions
+docker compose exec frontend npx tsx scripts/test-dates.ts             # date/countdown assertions
 ```
 
 **There is no test framework.** No `test` script, no runner, no `*.test.ts` anywhere — so there is no "run a single test". Verification is `typecheck` + `lint` + exercising the app. If you add tests, you are also picking the runner; say so rather than assuming one exists.
 
 `scripts/test-seed-superuser.ts` and `scripts/test-reset-superuser.ts` are **not** tests — they are non-interactive stand-ins for the `@inquirer/prompts` CLIs (which need a TTY), e.g. `tsx scripts/test-seed-superuser.ts <email> <password>`.
+
+`frontend/scripts/test-dates.ts` is the same idea on the frontend: 28 assertions over `formatFriendly` / `formatCountdown` against a pinned `now`, covering calendar-day boundaries, the year rollover, and every rung of the countdown ladder. Run it after touching either helper. It exists because that logic already shipped a real bug — a single-unit countdown read "in 1 day" directly beneath a date two days out — and only a pinned `now` can prove the two helpers agree.
 
 `scripts/test-interaction-flush.ts` **is** a real verification suite despite sharing that prefix: 9 `node:assert/strict` assertions over `recordInteractions` / `recordPinStates` / `listRecent`, against a throwaway SQLite file it migrates and deletes (never the dev DB), exiting 1 on the first failure. Run it after touching recency, pin mirroring, or the recents query. It is still not a *framework* — no runner, no discovery, and nothing else is covered.
 
@@ -173,7 +176,11 @@ Aesthetic: **"quiet utility ledger"** — warm paper + ink, deliberate typograph
   - Optical size is baked into the subset. The old `font-variation-settings: 'opsz' 120, 'SOFT' 50` on `h1` is gone — `SOFT` was never in the requested axes and had been silently doing nothing for as long as it existed.
   - **Never add a `<link>` back to `fonts.googleapis.com`.** That stylesheet is render-blocking on a third-party origin: DNS + TLS + request before first paint, measured by Lighthouse at ~900ms, and it pulled 201KB of woff2 against the current 61KB.
 - **Mono is reserved for machine-generated data**: raw timestamps, JIDs, phone numbers, cron expressions, emails, invite URLs. Never for prose, hints, error text, badge labels, or tab labels.
-  - **Humanized timestamps are prose, so they are sans.** `Tomorrow · Wed 19 Aug · 08:50` and `in 12 hours` (`lib/dates.ts` → `formatFriendly` / `formatCountdown`) render in `font-sans`; only the raw absolute form stays mono. Where a humanized value replaces a raw one, the exact timestamp survives as a `title` tooltip so nothing is lost. The Schedule page tables keep raw mono on purpose — they exist for scanning and auditing a list, where a column of aligned timestamps beats prose.
+  - **Humanized timestamps are prose, so they are sans.** `Tomorrow · Wed 19 Aug · 08:50` and `in 1d 20h` (`lib/dates.ts` → `formatFriendly` / `formatCountdown`) render in `font-sans`; only the raw absolute form stays mono. Where a humanized value replaces a raw one, the exact timestamp survives as a `title` tooltip so nothing is lost. The Schedule page tables keep raw mono on purpose — they exist for scanning and auditing a list, where a column of aligned timestamps beats prose.
+  - **`formatCountdown` shows TWO units under a week, and that is load-bearing.** It sits directly beneath `formatFriendly`, and a single truncated unit silently contradicts it: `Wed 19 Aug 12:11` → `Fri 21 Aug 09:06` is 1.87 days, which truncates to "in 1 day" while the date above plainly reads two days out. Carrying the residual (`in 1d 20h`) makes the two lines agree by construction. Don't "simplify" it back to one unit.
+    - Past a week it collapses to one coarse, calendar-aware unit (`in 3 weeks`, `in 6 months`) — the second unit stops being actionable there, and the exact date is already on the line above.
+    - That coarse unit is **rounded, not floored**, and the month/week branch is gated on the *unrounded* month count. Flooring is the same systematic understatement that caused the bug, and rounding months first would promote 25 days to "1 month". 25 days must read `in 4 weeks`.
+    - It takes `zone` for the calendar branch only — month and year lengths depend on the calendar the reader is actually in.
 - **Structure**: hairline rules (`border-rule`, `<hr>`) separate sections. Cards use `.ledger-card`; eyebrows use `.eyebrow` (both in `index.css`). No rounded-xl or drop-shadow defaults.
 - **Motion**: CSS-only (`animate-fadeInUp`, `animate-ping` on pending WA status). Don't add framer-motion.
 - **Icons are inlined SVG paths, not a package.** The recents pin marker is one Material Symbols `push_pin` path in `ContactQuickPick.tsx`, drawn upright and rotated `-45deg` at the call site (upright it reads as a generic marker; the tilt is what makes it WhatsApp's pinned-chat glyph). It is `text-ink-muted`, deliberately **not** `accent` — a mirrored pin is a neutral marker, not a status. Adding an icon dependency for the next glyph is a decision, not a default.

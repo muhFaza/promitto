@@ -30,6 +30,15 @@ export function epochToLocalInput(epochMs: number, zone: string): string {
   return DateTime.fromMillis(epochMs).setZone(zone).toFormat("yyyy-LL-dd'T'HH:mm");
 }
 
+const MINUTE_MS = 60_000;
+const HOUR_MS = 60 * MINUTE_MS;
+const DAY_MS = 24 * HOUR_MS;
+const WEEK_MS = 7 * DAY_MS;
+
+function pluralize(n: number, unit: string): string {
+  return `${n} ${unit}${n === 1 ? '' : 's'}`;
+}
+
 /**
  * Human-readable absolute time: `Tomorrow · Wed 19 Aug · 08:50`.
  *
@@ -55,15 +64,64 @@ export function formatFriendly(epochMs: number, zone: string, nowMs = Date.now()
 }
 
 /**
- * `in 45 minutes` / `in 3 days` / `2 days ago`. Luxon picks the unit and the
- * plural; `nowMs` is the base rather than the wall clock so the string is
- * deterministic. Sub-minute futures collapse to a phrase, since "in 0 minutes"
- * and "in 43 seconds" are both worse than "in under a minute" here.
+ * How long until (or since) `epochMs`, e.g. `in 1d 20h` / `in 5h 20m` / `in 3 weeks`.
+ *
+ * Under a week this shows TWO units, and that is the whole point: a single
+ * truncated unit silently disagrees with the date rendered beside it. `Wed 19
+ * Aug 12:11` → `Fri 21 Aug 09:06` is 1.87 days, which truncates to "in 1 day"
+ * while the date next to it plainly reads two days out. Carrying the residual
+ * (`in 1d 20h`) makes the two lines agree by construction.
+ *
+ * Past a week the second unit stops earning its place — nobody acts on the
+ * difference between `1mo 5d` and `1mo 6d`, and the exact date is already on
+ * the line above — so it collapses to one coarse, calendar-aware unit. That
+ * unit is ROUNDED, not floored: flooring is the same systematic understatement
+ * that caused the bug above, so 25 days reads `in 4 weeks`, not `in 3 weeks`.
+ *
+ * `nowMs` is the base rather than the wall clock so the output is deterministic.
+ * `zone` matters only for the calendar-aware branch, where month and year
+ * lengths depend on the calendar the user is actually reading.
  */
-export function formatCountdown(epochMs: number, nowMs: number): string {
-  const dt = DateTime.fromMillis(epochMs);
-  if (!dt.isValid) return '';
-  const delta = epochMs - nowMs;
-  if (delta >= 0 && delta < 60_000) return 'in under a minute';
-  return dt.toRelative({ base: DateTime.fromMillis(nowMs) }) ?? '';
+export function formatCountdown(epochMs: number, nowMs: number, zone: string): string {
+  if (!Number.isFinite(epochMs) || !Number.isFinite(nowMs)) return '';
+  const target = DateTime.fromMillis(epochMs).setZone(zone);
+  const now = DateTime.fromMillis(nowMs).setZone(zone);
+  if (!target.isValid || !now.isValid) return '';
+
+  const future = epochMs >= nowMs;
+  const abs = Math.abs(epochMs - nowMs);
+  if (abs < MINUTE_MS) return future ? 'in under a minute' : 'just now';
+
+  let body: string;
+  if (abs < WEEK_MS) {
+    if (abs < HOUR_MS) {
+      body = `${Math.floor(abs / MINUTE_MS)}m`;
+    } else if (abs < DAY_MS) {
+      const h = Math.floor(abs / HOUR_MS);
+      const m = Math.floor((abs % HOUR_MS) / MINUTE_MS);
+      body = m ? `${h}h ${m}m` : `${h}h`;
+    } else {
+      const d = Math.floor(abs / DAY_MS);
+      const h = Math.floor((abs % DAY_MS) / HOUR_MS);
+      body = h ? `${d}d ${h}h` : `${d}d`;
+    }
+  } else {
+    // Calendar-aware: earlier instant first, so the diff is always positive.
+    const [from, to] = future ? [now, target] : [target, now];
+    // Gate on the UNROUNDED month count. Rounding first would promote 25 days
+    // (0.81 months) to "1 month", overstating by nearly a week — the weeks
+    // branch has to own everything below a real month.
+    const months = to.diff(from, 'months').months;
+    if (months >= 12) {
+      body = pluralize(Math.round(to.diff(from, 'years').years), 'year');
+    } else if (months >= 1) {
+      const rounded = Math.round(months);
+      // 11.6 months rounds to 12, which reads better as a year than "12 months".
+      body = rounded >= 12 ? pluralize(1, 'year') : pluralize(rounded, 'month');
+    } else {
+      body = pluralize(Math.round(to.diff(from, 'weeks').weeks), 'week');
+    }
+  }
+
+  return future ? `in ${body}` : `${body} ago`;
 }
