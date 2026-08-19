@@ -311,6 +311,11 @@ change what is stored.
   (or IPv4-mapped) address rejects rather than being stripped — `1.2.3.4%x` is not an address
   we understand, and `1.2.3.0/24` would be an invented answer. A `null` is safe to store; an invented
   prefix looks exactly like a real network. `scripts/test-ip-anonymize.ts` asserts it.
+  **The `/privacy` page deliberately says nothing about IPs.** It used to describe this
+  coarsening, which is true of `sessions.ip` but read as a promise about the whole system —
+  Traefik, one hop up, keeps full client IPs in its own access log with no rotation. Rather
+  than explain that distinction on a page nobody reads twice, the claim was removed. Don't
+  re-add it: any sentence about IP handling there is only honest if it also covers the proxy.
 
 ## Scope — do not expand
 

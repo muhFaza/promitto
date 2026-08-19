@@ -111,10 +111,9 @@ export function Privacy() {
             removes them.
           </li>
           <li className="border-l-2 border-rule pl-4">
-            <span className="text-ink">Login sessions.</span> A cookie, your browser&rsquo;s
-            user agent string, and a coarse network prefix rather than your full IP address
-            — enough to tell networks apart, not enough to point at a household. Each
-            session also records when you signed in and when it was last used.
+            <span className="text-ink">Login sessions.</span> A cookie and your
+            browser&rsquo;s user agent string. Each session also records when you signed in
+            and when it was last used.
           </li>
         </ul>
         <p className="mt-4 text-sm leading-relaxed text-ink-soft">
