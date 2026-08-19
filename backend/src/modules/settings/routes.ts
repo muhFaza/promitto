@@ -21,6 +21,7 @@ import {
   setTimezone,
 } from '../users/service.js';
 import { sessionManager } from '../wa-sessions/manager.js';
+import { requirePasswordVerifyBudget } from './rate-limit.js';
 
 export const settingsRouter: Router = Router();
 
@@ -31,7 +32,7 @@ const ChangePasswordBody = z.object({
   newPassword: z.string().min(12, 'New password must be at least 12 characters').max(1024),
 });
 
-settingsRouter.post('/password', async (req, res, next) => {
+settingsRouter.post('/password', requirePasswordVerifyBudget, async (req, res, next) => {
   try {
     const body = ChangePasswordBody.parse(req.body);
     const user = req.user;
@@ -117,92 +118,102 @@ settingsRouter.post('/contact-sync', requirePasswordRotated, (req, res, next) =>
 
 const PurgeBody = z.object({ currentPassword: z.string().min(1).max(1024) });
 
-settingsRouter.post('/purge-data', requirePasswordRotated, async (req, res, next) => {
-  try {
-    const user = req.user;
-    if (!user) throw errors.unauthorized();
-    const body = PurgeBody.parse(req.body);
-    const ok = await verifyPassword(user.passwordHash, body.currentPassword);
-    if (!ok) throw errors.unauthorized('Current password is incorrect');
+settingsRouter.post(
+  '/purge-data',
+  requirePasswordRotated,
+  requirePasswordVerifyBudget,
+  async (req, res, next) => {
+    try {
+      const user = req.user;
+      if (!user) throw errors.unauthorized();
+      const body = PurgeBody.parse(req.body);
+      const ok = await verifyPassword(user.passwordHash, body.currentPassword);
+      if (!ok) throw errors.unauthorized('Current password is incorrect');
 
-    // retentionDays 0 == cutoff is now == delete everything already past.
-    // dryRun is pinned false: RETENTION_DRY_RUN exists to make the periodic
-    // sweep observable before it is trusted, and must never turn a user's
-    // "delete my data" click into a silent no-op that reports counts anyway.
-    const counts = sweepUser(user.id, 0, { dryRun: false });
-    logger.info({ userId: user.id, ...counts }, 'user purged their message data');
-    res.json(counts);
-  } catch (err) {
-    next(err);
-  }
-});
+      // retentionDays 0 == cutoff is now == delete everything already past.
+      // dryRun is pinned false: RETENTION_DRY_RUN exists to make the periodic
+      // sweep observable before it is trusted, and must never turn a user's
+      // "delete my data" click into a silent no-op that reports counts anyway.
+      const counts = sweepUser(user.id, 0, { dryRun: false });
+      logger.info({ userId: user.id, ...counts }, 'user purged their message data');
+      res.json(counts);
+    } catch (err) {
+      next(err);
+    }
+  },
+);
 
 const DeleteAccountBody = z.object({
   currentPassword: z.string().min(1).max(1024),
   confirm: z.literal('DELETE'),
 });
 
-settingsRouter.delete('/account', requirePasswordRotated, async (req, res, next) => {
-  try {
-    const user = req.user;
-    if (!user) throw errors.unauthorized();
-    const body = DeleteAccountBody.parse(req.body);
-
-    const ok = await verifyPassword(user.passwordHash, body.currentPassword);
-    if (!ok) throw errors.unauthorized('Current password is incorrect');
-
-    // The last superuser leaving would lock everyone out of user management,
-    // and there is no signup path to create a replacement. This is the cheap
-    // early exit only — the authoritative check is inside deleteSelf, because
-    // the awaited logout below opens a window two concurrent deletes could both
-    // walk through. It runs before anything destructive precisely so the
-    // authoritative check almost never fires after the credentials are gone.
-    if (user.role === 'superuser' && countSuperusers() <= 1) {
-      throw errors.conflict(
-        'You are the only superuser. Promote another account before deleting this one.',
-      );
-    }
-
-    // Unlink the device from the user's phone so they can confirm on their own
-    // handset that Promitto is gone. A WhatsApp failure must never block the
-    // deletion — the local data still goes.
+settingsRouter.delete(
+  '/account',
+  requirePasswordRotated,
+  requirePasswordVerifyBudget,
+  async (req, res, next) => {
     try {
-      await sessionManager.disconnect(user.id, { logout: true });
+      const user = req.user;
+      if (!user) throw errors.unauthorized();
+      const body = DeleteAccountBody.parse(req.body);
+
+      const ok = await verifyPassword(user.passwordHash, body.currentPassword);
+      if (!ok) throw errors.unauthorized('Current password is incorrect');
+
+      // The last superuser leaving would lock everyone out of user management,
+      // and there is no signup path to create a replacement. This is the cheap
+      // early exit only — the authoritative check is inside deleteSelf, because
+      // the awaited logout below opens a window two concurrent deletes could both
+      // walk through. It runs before anything destructive precisely so the
+      // authoritative check almost never fires after the credentials are gone.
+      if (user.role === 'superuser' && countSuperusers() <= 1) {
+        throw errors.conflict(
+          'You are the only superuser. Promote another account before deleting this one.',
+        );
+      }
+
+      // Unlink the device from the user's phone so they can confirm on their own
+      // handset that Promitto is gone. A WhatsApp failure must never block the
+      // deletion — the local data still goes.
+      try {
+        await sessionManager.disconnect(user.id, { logout: true });
+      } catch (err) {
+        logger.warn({ err, userId: user.id }, 'wa logout failed during account deletion');
+      }
+
+      // Filesystem BEFORE the DB row, and the order is load-bearing — do not
+      // "tidy" it back. A crash between the two steps has to leave *something*
+      // inconsistent; this direction leaves the account alive with its pairing
+      // gone, which the user fixes by re-pairing or by deleting again. The
+      // reverse direction leaves Baileys credentials on disk with no row pointing
+      // at them, no retry path and nothing that ever prunes them — permanently
+      // orphaned credentials for an account that no longer exists.
+      //
+      // Re-asserted rather than assumed: if the disconnect above threw before
+      // wipeAuthState ran, the creds would still be here. This also removes the
+      // `.revoked-*` copies wipeAuthState moves aside — nothing else prunes them,
+      // and the user asked for their data to be gone.
+      await sessionManager.purgeAuthState(user.id);
+
+      // The authoritative last-superuser check. Reaching a 409 here means the
+      // credentials are already purged and the user must re-pair — the cheap
+      // pre-check above exists to make that vanishingly rare (it needs two
+      // concurrent self-deletes), and losing a pairing is the recoverable half of
+      // the trade-off above.
+      const outcome = deleteSelf(user.id);
+      if (outcome === 'last_superuser') {
+        throw errors.conflict(
+          'You are the only superuser. Promote another account before deleting this one. ' +
+            'This device has been unlinked from WhatsApp; reconnect from the dashboard.',
+        );
+      }
+      logger.info({ userId: user.id, email: user.email, outcome }, 'account self-deleted');
+
+      clearSessionCookies(res);
+      res.status(204).end();
     } catch (err) {
-      logger.warn({ err, userId: user.id }, 'wa logout failed during account deletion');
+      next(err);
     }
-
-    // Filesystem BEFORE the DB row, and the order is load-bearing — do not
-    // "tidy" it back. A crash between the two steps has to leave *something*
-    // inconsistent; this direction leaves the account alive with its pairing
-    // gone, which the user fixes by re-pairing or by deleting again. The
-    // reverse direction leaves Baileys credentials on disk with no row pointing
-    // at them, no retry path and nothing that ever prunes them — permanently
-    // orphaned credentials for an account that no longer exists.
-    //
-    // Re-asserted rather than assumed: if the disconnect above threw before
-    // wipeAuthState ran, the creds would still be here. This also removes the
-    // `.revoked-*` copies wipeAuthState moves aside — nothing else prunes them,
-    // and the user asked for their data to be gone.
-    await sessionManager.purgeAuthState(user.id);
-
-    // The authoritative last-superuser check. Reaching a 409 here means the
-    // credentials are already purged and the user must re-pair — the cheap
-    // pre-check above exists to make that vanishingly rare (it needs two
-    // concurrent self-deletes), and losing a pairing is the recoverable half of
-    // the trade-off above.
-    const outcome = deleteSelf(user.id);
-    if (outcome === 'last_superuser') {
-      throw errors.conflict(
-        'You are the only superuser. Promote another account before deleting this one. ' +
-          'This device has been unlinked from WhatsApp; reconnect from the dashboard.',
-      );
-    }
-    logger.info({ userId: user.id, email: user.email, outcome }, 'account self-deleted');
-
-    clearSessionCookies(res);
-    res.status(204).end();
-  } catch (err) {
-    next(err);
-  }
-});
+  },
+);

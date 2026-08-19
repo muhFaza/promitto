@@ -81,10 +81,52 @@ export function sweepUser(
   return run.immediate();
 }
 
+/**
+ * What the last periodic pass did. Exposed on /api/health because the sweep is
+ * unattended and silent when it deletes nothing: at `LOG_LEVEL=info` six
+ * healthy zero-delete passes and a wedged timer produce exactly the same output
+ * (none). `lastCompletedAt` moving is the proof the timer is alive; `lastError`
+ * is the proof it is not failing quietly.
+ *
+ * All timestamps are epoch ms, matching the wire convention everywhere else.
+ * `null` means "has not happened yet" — a fresh container has a null
+ * `lastCompletedAt` for a moment, which is not a fault.
+ */
+export type RetentionStatus = {
+  /** Start of the most recent tick. */
+  lastStartedAt: number | null;
+  /** End of the most recent tick that ran to completion. */
+  lastCompletedAt: number | null;
+  /** Rows deleted (or, under dryRun, matched) by that completed tick. */
+  lastCounts: SweepCounts | null;
+  /** Message from the last tick that threw, cleared by the next clean tick. */
+  lastError: string | null;
+  /** RETENTION_DRY_RUN: when true nothing is actually deleted. */
+  dryRun: boolean;
+  /** Whether the interval timer is currently armed. */
+  running: boolean;
+};
+
 class RetentionSweeper {
   private interval: NodeJS.Timeout | null = null;
   private sweeping = false;
   private stopped = false;
+  private lastStartedAt: number | null = null;
+  private lastCompletedAt: number | null = null;
+  private lastCounts: SweepCounts | null = null;
+  private lastError: string | null = null;
+
+  /** Never throws — /api/health must not be able to 500 on this. */
+  getStatus(): RetentionStatus {
+    return {
+      lastStartedAt: this.lastStartedAt,
+      lastCompletedAt: this.lastCompletedAt,
+      lastCounts: this.lastCounts,
+      lastError: this.lastError,
+      dryRun: env.RETENTION_DRY_RUN,
+      running: this.interval !== null,
+    };
+  }
 
   start(): void {
     if (this.interval) return;
@@ -118,6 +160,7 @@ class RetentionSweeper {
   private tick(): void {
     if (this.stopped || this.sweeping) return;
     this.sweeping = true;
+    this.lastStartedAt = Date.now();
     try {
       const rows = db
         .select({ id: users.id, retentionDays: users.retentionDays })
@@ -125,6 +168,9 @@ class RetentionSweeper {
         .all();
       let sent = 0;
       let scheduled = 0;
+      // A per-user failure does not abort the tick, but it must still surface:
+      // it is the exact case that is otherwise invisible at LOG_LEVEL=info.
+      let tickError: string | null = null;
       for (const row of rows) {
         if (this.stopped) break;
         // Skip rather than sweep with a value we don't recognise. The periodic
@@ -143,6 +189,7 @@ class RetentionSweeper {
           scheduled += counts.scheduledMessages;
         } catch (err) {
           logger.error({ err, userId: row.id }, 'retention sweep failed for user');
+          tickError = err instanceof Error ? err.message : String(err);
         }
       }
       if (sent > 0 || scheduled > 0) {
@@ -153,8 +200,15 @@ class RetentionSweeper {
       } else {
         logger.debug('retention sweep found nothing to delete');
       }
+      this.lastCounts = { sentMessages: sent, scheduledMessages: scheduled };
+      this.lastError = tickError;
+      this.lastCompletedAt = Date.now();
     } catch (err) {
       logger.error({ err }, 'retention sweep tick failed');
+      // lastCompletedAt deliberately untouched: the tick did not complete, and
+      // a stale-but-honest timestamp next to a non-null lastError is what tells
+      // an operator how long it has been broken.
+      this.lastError = err instanceof Error ? err.message : String(err);
     } finally {
       this.sweeping = false;
     }

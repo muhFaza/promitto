@@ -1743,8 +1743,17 @@ class SessionManager {
    * directory listing, so an id containing regex metacharacters can never widen
    * the match to another user's directory.
    *
-   * Never throws. It runs after the DB cascade, so a failure here must not turn
-   * a completed deletion into a 500; it logs loudly instead.
+   * Runs *before* the row is deleted, on both delete paths (the user's own
+   * DELETE /api/settings/account and the admin's DELETE /api/users/:id), and
+   * that order is deliberate — do not "tidy" it to run after. A crash between
+   * the two steps has to leave something inconsistent; this direction leaves a
+   * live account whose pairing is gone, which re-pairing or deleting again
+   * fixes. The reverse leaves credentials on disk with no row pointing at them,
+   * no retry path and nothing that ever prunes them.
+   *
+   * Never throws, precisely because it is now the step in front of the delete:
+   * a filesystem failure here must not block the account from being removed. It
+   * logs loudly instead.
    */
   async purgeAuthState(userId: string): Promise<void> {
     const root = env.SESSIONS_DIR;

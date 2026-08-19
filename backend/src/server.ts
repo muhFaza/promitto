@@ -16,6 +16,7 @@ import { requestLogger } from './middleware/logger.js';
 import { securityHeaders } from './middleware/security-headers.js';
 import { authRouter } from './modules/auth/routes.js';
 import { contactsRouter } from './modules/contacts/routes.js';
+import { retentionSweeper, type RetentionStatus } from './modules/privacy/retention.js';
 import { schedulerRouter } from './modules/scheduler/routes.js';
 import { settingsRouter } from './modules/settings/routes.js';
 import { usersRouter } from './modules/users/routes.js';
@@ -176,6 +177,20 @@ export function createApp(): Express {
       mem = undefined;
     }
 
+    // The sweeper deletes on a 6h timer and logs nothing at LOG_LEVEL=info when
+    // it finds nothing, so a healthy zero-delete pass and a wedged timer are
+    // indistinguishable from outside. `lastCompletedAt` advancing is the proof
+    // it is alive; `dryRun` is here because a deployment that quietly retains
+    // everything looks identical to one that is working. Same conditional
+    // spread as `wa`/`mem` — omitted entirely on failure, never null — and it
+    // deliberately does not feed `status`.
+    let retention: RetentionStatus | undefined;
+    try {
+      retention = retentionSweeper.getStatus();
+    } catch {
+      retention = undefined;
+    }
+
     res.json({
       // `status` is driven by the DB check ALONE, deliberately. Do not fold WA
       // state into it: .github/workflows/deploy.yml greps for "status":"ok" to
@@ -188,6 +203,7 @@ export function createApp(): Express {
       sessions,
       ...(wa ? { wa } : {}),
       ...(mem ? { mem } : {}),
+      ...(retention ? { retention } : {}),
     });
   });
 

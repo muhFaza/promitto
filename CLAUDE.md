@@ -23,12 +23,13 @@ docker compose exec backend npm run db:migrate
 docker compose exec backend npm run cli:create-superuser
 docker compose exec backend npm run cli:reset-superuser-password
 
+docker compose exec backend npm run verify                # all five suites, fail-fast
 docker compose exec backend npx tsx scripts/test-interaction-flush.ts   # recents assertions
 docker compose exec backend npx tsx scripts/test-retention-sweep.ts     # retention assertions
 docker compose exec backend npx tsx scripts/test-ip-anonymize.ts        # IP coarsening assertions
 ```
 
-**There is no test framework.** No `test` script, no runner, no `*.test.ts` anywhere — so there is no "run a single test". Verification is `typecheck` + `lint` + exercising the app. If you add tests, you are also picking the runner; say so rather than assuming one exists.
+**There is no test framework.** No runner, no `*.test.ts` anywhere — so there is no "run a single test". `npm run verify` is a plain `&&` chain of the five standalone suites (`test-ip-anonymize`, `test-superuser-guard`, `test-retention-sweep`, `test-interaction-flush`, `test-signal-tx-isolation`), fail-fast, each with its own throwaway SQLite file. **`.github/workflows/deploy.yml` runs it before the image is built**, so a change that widens the retention delete predicate fails the deploy instead of reaching production — that gate is the closest thing to a backup this project has. Verification is `verify` + `typecheck` + `lint` + exercising the app. If you add tests, you are also picking the runner; say so rather than assuming one exists.
 
 `scripts/test-seed-superuser.ts` and `scripts/test-reset-superuser.ts` are **not** tests — they are non-interactive stand-ins for the `@inquirer/prompts` CLIs (which need a TTY), e.g. `tsx scripts/test-seed-superuser.ts <email> <password>`.
 
@@ -191,6 +192,13 @@ change what is stored.
   logging a warning — unattended and destructive is not the place to guess.
 - **Hard delete, not redaction.** A row kept with its text nulled still records who was
   messaged and when, which is the thing retention exists to stop keeping.
+- **`/api/health` reports the sweeper** under a `retention` key: `lastStartedAt`,
+  `lastCompletedAt`, `lastCounts`, `lastError`, `dryRun`, `running`. An empty pass logs at
+  `debug` and production runs `LOG_LEVEL=info`, so without this a wedged 6h timer and six
+  healthy zero-delete sweeps are indistinguishable — `lastCompletedAt` advancing is the proof
+  it is alive. It follows the same conditional spread as `wa`/`mem` (omitted entirely if the
+  getter throws, never `null`) and **must never influence `status`**, which stays driven by the
+  DB ping alone because `deploy.yml` greps `"status":"ok"` to decide rollback.
 - **`RETENTION_DRY_RUN`** makes the periodic sweep count and log without deleting.
   **The first production deploy of this feature runs with `RETENTION_DRY_RUN=true` in
   `~/promitto/.env`** and is armed later by removing that line. The 60-day default is
@@ -218,6 +226,11 @@ change what is stored.
   with 409 for the last superuser, then a best-effort `disconnect(userId, { logout: true })` to
   unlink the device from the phone (failure logs and continues — WhatsApp must never block the
   delete), `sessionManager.purgeAuthState(userId)`, and only then the DB cascade.
+  - **The admin path does the same teardown.** `DELETE /api/users/:id` (`users/routes.ts`) runs
+    the identical disconnect → purge → delete sequence, and is `async` for it. It used to call
+    `deleteUserById` alone, which left the deleted user's Baileys creds in `SESSIONS_DIR`
+    forever, their device still linked to their phone, and a live socket in memory for an
+    account that no longer existed. If you change one path, change both.
   - **Filesystem before the DB row, and the order is load-bearing.** A crash between the two
     has to leave something inconsistent: this way the account is still there with its pairing
     gone, which the user fixes by re-pairing or deleting again. The reverse leaves Baileys
@@ -243,6 +256,15 @@ change what is stored.
     and there are no backups — so those copies accumulate, and nothing else prunes them. Don't
     "fix" `wipeAuthState` into an `rm`; the pruning belongs where the user explicitly asked for
     everything to be gone.
+- **The three password-confirming settings routes share one per-user token bucket**
+  (`modules/settings/rate-limit.ts`): `POST /password`, `POST /purge-data` and
+  `DELETE /account`, 3 burst with one token back every 30s, 429 `rate_limited` on exhaustion.
+  Each of them runs Argon2id, which allocates ~64 MiB **outside the V8 heap** per verify, on a
+  container capped at `mem_limit: 384m` — a handful of concurrent calls was enough to OOM the
+  process and take the paired WhatsApp session and the scheduler with it. One shared bucket,
+  not three: the cost is per verify, so separate budgets would multiply the thing being
+  bounded. Keyed by user id because all three sit behind `requireAuth`. Mounted per-route, not
+  on the router — the cheap settings writes must not spend an Argon2-sized budget.
 - **Stored IPs are coarsened** to `/24` (v4) or `/48` (v6) by `lib/ip.ts` before they reach
   `sessions.ip`. The login rate limiter still buckets on the full `req.ip` — it is in-memory
   and never persisted. Parsing is strict and every failure returns `null`: octets must be 1-3

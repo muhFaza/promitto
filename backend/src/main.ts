@@ -69,14 +69,17 @@ async function shutdown(signal: string, exitCode = 0): Promise<void> {
     // First: it is pure observability, and a telemetry line emitted midway
     // through teardown would describe a process that no longer exists.
     try {
-      await retentionSweeper.stop();
-    } catch (err) {
-      logger.error({ err }, 'retentionSweeper.stop failed');
-    }
-    try {
       memoryMonitor.stop();
     } catch (err) {
       logger.error({ err }, 'memoryMonitor.stop failed');
+    }
+    // Then the sweeper — not observability: it deletes. Stopped before the
+    // poller and the sockets so a tick can't start against a half-torn-down
+    // process, and awaited so any tick already in flight finishes first.
+    try {
+      await retentionSweeper.stop();
+    } catch (err) {
+      logger.error({ err }, 'retentionSweeper.stop failed');
     }
     try {
       await schedulerPoller.stop();
