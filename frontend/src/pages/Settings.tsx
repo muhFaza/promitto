@@ -364,7 +364,7 @@ export function Settings() {
           <div className="mt-6 space-y-3">
             <Field label="Keep history for">
               <Select
-                value={String(user?.retentionDays ?? 60)}
+                value={String(user?.retentionDays ?? 180)}
                 disabled={mustChange || retentionBusy}
                 onChange={(e) => void handleRetention(Number(e.target.value))}
               >

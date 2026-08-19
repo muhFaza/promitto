@@ -1,0 +1,22 @@
+-- Data-only migration: no DDL, so `users` is NOT rebuilt.
+--
+-- 0008 added `retention_days` with a DDL default of 60, which back-filled every
+-- existing account. That default is retroactive, so the first armed sweep would
+-- have hard-deleted 31 `sent_messages` rows and 34 finished one-off schedules on
+-- a database with no backups. Raising the product default to 180 makes the first
+-- real sweep a no-op -- the oldest row on disk is 121 days old -- and pushes the
+-- first genuine deletion out to roughly Oct 2026.
+--
+-- Only rows still sitting on the grandfathered 60 move. Checked against
+-- production first: 4 of 5 accounts were on an untouched 60, the fifth had
+-- already chosen 180, and the proxy access log held exactly three retention
+-- writes, all from one address inside ten seconds -- one person moving the
+-- dropdown. Nobody had deliberately selected 60. A user who picks 60 *after*
+-- this migration keeps it; migrations run once.
+--
+-- The DDL default deliberately stays 60. SQLite cannot ALTER a column default,
+-- so changing it would make drizzle-kit rebuild the table (create __new_users,
+-- copy, DROP, rename) with five cascading child tables underneath and no
+-- recovery path. `createUser` passes the value explicitly instead --
+-- see DEFAULT_RETENTION_DAYS in modules/privacy/retention.ts.
+UPDATE `users` SET `retention_days` = 180 WHERE `retention_days` = 60;

@@ -19,6 +19,12 @@ export const users = sqliteTable('users', {
   mustChangePassword: integer('must_change_password', { mode: 'boolean' })
     .notNull()
     .default(false),
+  // 60 here is the DDL default and is deliberately stale: the product default
+  // is DEFAULT_RETENTION_DAYS (180) in modules/privacy/retention.ts, which
+  // createUser passes explicitly. Do not "fix" this to 180 — SQLite has no
+  // ALTER COLUMN, so drizzle-kit would rebuild `users` (create/copy/DROP/rename)
+  // with five cascading children and no recovery path, to change a value that
+  // the one insert site never reads.
   retentionDays: integer('retention_days').notNull().default(60),
   contactSyncEnabled: integer('contact_sync_enabled', { mode: 'boolean' })
     .notNull()

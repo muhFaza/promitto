@@ -200,9 +200,22 @@ exists, for how long, and make all of it user-deletable. `/privacy` (public, reg
 the `*` catch-all and outside `RequireAuth`) states this plainly; keep it accurate if you
 change what is stored.
 
-- **Two `users` columns drive it**: `retention_days` (default 60; allowed 7/30/60/90/180, and
-  there is deliberately **no unlimited option**) and `contact_sync_enabled` (default true —
+- **Two `users` columns drive it**: `retention_days` (allowed 7/30/60/90/180, and there is
+  deliberately **no unlimited option**) and `contact_sync_enabled` (default true —
   grandfathered ON, so this is honestly opt-*out*, not opt-in).
+- **The retention default is `DEFAULT_RETENTION_DAYS = 180` in `retention.ts`, NOT the
+  column's DDL default, which is still 60 and deliberately stale.** SQLite has no
+  `ALTER COLUMN`, so raising the DDL default would make drizzle-kit rebuild `users`
+  (create `__new_users` → copy → `DROP TABLE` → rename) underneath six cascading child
+  tables, on a database with no backups — to change a value the single insert site never
+  reads, because `createUser` passes it explicitly. Migration `0009` is therefore
+  **data-only** (`UPDATE users SET retention_days = 180 WHERE retention_days = 60`). Don't
+  "tidy" schema.ts to 180; it will generate the rebuild.
+  - It started at 60. `0008` back-filled every existing account to that, and the default is
+    retroactive, so arming the sweeper then would have hard-deleted 31 `sent_messages` rows
+    and 34 finished one-off schedules. 180 was verified against a copy of the production
+    database to make the first armed sweep a **no-op** — the oldest row was 121 days old —
+    which is what made arming safe at all.
 - **`modules/privacy/retention.ts`** sweeps every 6h plus once at boot, following the poller's
   singleton/re-entrancy idiom. It deletes `sent_messages` older than the cutoff and
   `scheduled_messages` where **`is_active = 0 AND schedule_type = 'once'`** older than the
@@ -225,11 +238,13 @@ change what is stored.
   getter throws, never `null`) and **must never influence `status`**, which stays driven by the
   DB ping alone because `deploy.yml` greps `"status":"ok"` to decide rollback.
 - **`RETENTION_DRY_RUN`** makes the periodic sweep count and log without deleting.
-  **The first production deploy of this feature runs with `RETENTION_DRY_RUN=true` in
-  `~/promitto/.env`** and is armed later by removing that line. The 60-day default is
-  retroactive and the boot sweep fires immediately, so without this window every user
-  loses history older than 60 days before they can choose 90 or 180 — and there are no
-  backups. `docker-compose.prod.yml` passes it through as `${RETENTION_DRY_RUN:-false}`,
+  The feature shipped with `RETENTION_DRY_RUN=true` in `~/promitto/.env` and was armed on
+  **2026-08-19** by removing that line, *after* migration `0009` raised the default to 180
+  and a simulated armed sweep against a production copy reported 0 deletions. That order
+  matters and is the reusable lesson: the default is retroactive and the boot sweep fires
+  immediately, so arming at 60 would have destroyed 65 rows with no backups.
+  Re-arm the flag before any future change that widens the delete predicate or lowers a
+  default. `docker-compose.prod.yml` passes it through as `${RETENTION_DRY_RUN:-false}`,
   so the safe state is opt-in and forgetting the .env line arms it rather than disabling it.
   `sweepUser(id, days, { dryRun: false })` overrides it, and the user-initiated purge pins it
   false on purpose — an operator flag must never turn "delete my data" into a silent no-op
