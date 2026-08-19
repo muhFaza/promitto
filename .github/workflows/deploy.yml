@@ -82,7 +82,7 @@ jobs:
         run: npm run verify
 
       - name: Build production image
-        run: docker build -t promitto:deploy .
+        run: docker build --build-arg GIT_SHA=${{ github.sha }} -t promitto:deploy .
 
       - name: Configure SSH
         env:

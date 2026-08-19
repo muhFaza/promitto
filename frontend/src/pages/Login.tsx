@@ -5,6 +5,7 @@ import { Button } from '../components/ui/Button';
 import { Field } from '../components/ui/Field';
 import { Input } from '../components/ui/Input';
 import { Spinner } from '../components/ui/Spinner';
+import { REPO_URL } from '../lib/repo';
 import { useAuthStore } from '../stores/auth';
 
 type LocationState = { from?: string } | null;
@@ -117,6 +118,18 @@ export function Login() {
           >
             What this server stores about you
           </Link>
+          <p className="mt-3 text-[12px] text-ink-muted">
+            Open source —{' '}
+            <a
+              className="underline underline-offset-4 hover:text-ink"
+              href={REPO_URL}
+              target="_blank"
+              rel="noreferrer"
+            >
+              read the code
+            </a>{' '}
+            or run your own.
+          </p>
         </div>
       </div>
     </div>

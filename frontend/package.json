@@ -1,6 +1,6 @@
 {
   "name": "promitto-frontend",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": true,
   "type": "module",
   "description": "Promitto frontend \u2014 Vite + React + TS + Tailwind",

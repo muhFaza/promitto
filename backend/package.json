@@ -1,9 +1,9 @@
 {
   "name": "promitto-backend",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "Promitto backend — Express + Drizzle + SQLite",
+  "description": "Promitto backend \u2014 Express + Drizzle + SQLite",
   "scripts": {
     "dev": "tsx watch src/main.ts",
     "build": "tsc",
@@ -15,7 +15,7 @@
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "postinstall": "patch-package --error-on-fail",
-    "verify": "mkdir -p data && tsx scripts/test-ip-anonymize.ts && tsx scripts/test-superuser-guard.ts && tsx scripts/test-retention-sweep.ts && tsx scripts/test-interaction-flush.ts && tsx scripts/test-signal-tx-isolation.ts",
+    "verify": "mkdir -p data && tsx scripts/test-ip-anonymize.ts && tsx scripts/test-version-compare.ts && tsx scripts/test-superuser-guard.ts && tsx scripts/test-retention-sweep.ts && tsx scripts/test-interaction-flush.ts && tsx scripts/test-signal-tx-isolation.ts",
     "test:signal-tx": "tsx scripts/test-signal-tx-isolation.ts"
   },
   "dependencies": {

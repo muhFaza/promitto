@@ -20,6 +20,7 @@ import { invitesRouter } from './modules/invites/routes.js';
 import { retentionSweeper, type RetentionStatus } from './modules/privacy/retention.js';
 import { schedulerRouter } from './modules/scheduler/routes.js';
 import { settingsRouter } from './modules/settings/routes.js';
+import { versionRouter } from './modules/version/routes.js';
 import { usersRouter } from './modules/users/routes.js';
 import { sessionManager } from './modules/wa-sessions/manager.js';
 import { waRouter } from './modules/wa-sessions/routes.js';
@@ -216,6 +217,7 @@ export function createApp(): Express {
   app.use('/api/contacts', contactsRouter);
   app.use('/api/scheduler', schedulerRouter);
   app.use('/api/settings', settingsRouter);
+  app.use('/api/version', versionRouter);
 
   if (env.NODE_ENV === 'production') {
     // From compiled output (backend/dist/server.js) → parent of backend → frontend/dist

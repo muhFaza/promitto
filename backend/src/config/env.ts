@@ -30,6 +30,15 @@ const EnvSchema = z.object({
     .enum(['true', 'false'])
     .default('false')
     .transform((v) => v === 'true'),
+  // Baked in by the Dockerfile from a build arg. Absent in dev, which is why
+  // it is optional rather than defaulted to a lie like 'unknown'.
+  GIT_SHA: z.preprocess((v) => (v === '' ? undefined : v), z.string().optional()),
+  // The one outbound call this app makes. Off is a supported way to run it:
+  // an air-gapped or paranoid host should not have to patch code to stop it.
+  UPDATE_CHECK: z
+    .enum(['true', 'false'])
+    .default('true')
+    .transform((v) => v === 'true'),
 });
 
 type ParsedEnv = z.infer<typeof EnvSchema>;

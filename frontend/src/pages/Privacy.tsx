@@ -1,7 +1,6 @@
 import { Link } from 'react-router-dom';
+import { REPO_URL } from '../lib/repo';
 import { useAuthStore } from '../stores/auth';
-
-const REPO_URL = 'https://github.com/muhFaza/promitto';
 
 export function Privacy() {
   // This page is public, but most visitors arrive from the Settings link, so the
@@ -27,7 +26,7 @@ export function Privacy() {
 
       <section>
         <h2 className="font-display text-2xl italic text-ink">
-          The operator can read your messages
+          The admin can read your messages
         </h2>
         <p className="mt-3 text-sm leading-relaxed text-ink-soft">
           Promitto sends messages at a time you pick, which is usually a time when you are
@@ -118,13 +117,16 @@ export function Privacy() {
           </li>
         </ul>
         <p className="mt-4 text-sm leading-relaxed text-ink-soft">
-          Nothing is sent to any third party. There is no analytics, no advertising, no
-          tracking script, and no data sharing. Fonts and the rest of the interface are
-          served from this server rather than a CDN. There is one exception: contact profile
-          pictures are held on WhatsApp&rsquo;s own servers, and this server points your
-          browser at them rather than fetching and re-serving them, so opening a page that
-          shows contacts makes your browser connect to WhatsApp directly. Beyond that, the
-          only outbound traffic is to WhatsApp itself.
+          Nothing about you is sent to any third party. There is no analytics, no
+          advertising, no tracking script, and no data sharing. Fonts and the rest of the
+          interface are served from this server rather than a CDN. There is one exception:
+          contact profile pictures are held on WhatsApp&rsquo;s own servers, and this server
+          points your browser at them rather than fetching and re-serving them, so opening a
+          page that shows contacts makes your browser connect to WhatsApp directly. The
+          server also asks GitHub every six hours whether a newer release of Promitto exists,
+          so Settings can tell you whether this one is behind — that request carries nothing
+          about you or your account, and your browser never makes it. Beyond those, the only
+          outbound traffic is to WhatsApp itself.
         </p>
       </section>
 
@@ -155,7 +157,7 @@ export function Privacy() {
           The server takes no backups of any kind. Deleting your account deletes your
           contacts, schedules, message history and WhatsApp pairing immediately and
           permanently — there is no copy anywhere to restore from, and no grace period in
-          which the operator could undo it for you.
+          which the admin could undo it for you.
         </p>
         <p className="mt-3 text-sm leading-relaxed text-ink-soft">
           The same fact cuts the other way: if the server&rsquo;s disk fails, your data is
@@ -168,7 +170,7 @@ export function Privacy() {
 
       <section>
         <h2 className="font-display text-2xl italic text-ink">
-          If you would rather not trust the operator
+          If you would rather not trust the admin
         </h2>
         <p className="mt-3 text-sm leading-relaxed text-ink-soft">
           Promitto is open source and runs as a single container with a SQLite file. You can
