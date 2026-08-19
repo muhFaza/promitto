@@ -54,14 +54,31 @@ jobs:
         with:
           node-version: 20
           cache: npm
-          cache-dependency-path: backend/package-lock.json
+          cache-dependency-path: |
+            backend/package-lock.json
+            frontend/package-lock.json
 
       - name: Install backend dependencies
         working-directory: backend
         run: npm ci
 
-      - name: Verify
+      - name: Verify backend
         working-directory: backend
+        run: npm run verify
+
+      # The frontend has assertions too, and until now nothing ran them. The
+      # date helpers already shipped one bug this way: formatCountdown truncated
+      # to a single unit and rendered "in 1 day" directly beneath a date two days
+      # out, and the original test asserted that truncated value as correct
+      # because it checked the countdown in isolation rather than against the
+      # date beside it. A suite nothing executes reads like coverage while
+      # providing none.
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Verify frontend
+        working-directory: frontend
         run: npm run verify
 
       - name: Build production image

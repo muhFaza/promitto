@@ -28,3 +28,10 @@ Thumbs.db
 # misc
 *.tsbuildinfo
 coverage/
+
+# LLM-generated planning artifacts. CLAUDE.md and README are the only docs
+# kept in-tree: they are context the next reader needs, not a record of how a
+# change was produced. Plans and specs go stale the moment the code moves and
+# nothing reconciles them.
+docs/superpowers/
+.superpowers/
