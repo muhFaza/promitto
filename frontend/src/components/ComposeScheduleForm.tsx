@@ -6,7 +6,10 @@ import {
 } from 'react';
 import { ApiError } from '../api/client';
 import * as schedulerApi from '../api/scheduler';
+import { useNow } from '../hooks/useNow';
 import {
+  formatCountdown,
+  formatFriendly,
   formatInZone,
   nowInZoneForInput,
   parseLocalInputInZone,
@@ -61,6 +64,12 @@ export function ComposeScheduleForm({ onCreated }: Props) {
 
   const tz = user?.timezone ?? 'UTC';
   const cronExpression = isCustom ? customCron.trim() : preset;
+
+  const now = useNow();
+  // Echo of what the `datetime-local` value actually resolves to. Null while
+  // the field is empty or half-typed — the echo simply isn't rendered then.
+  const runAtMs = type === 'once' ? parseLocalInputInZone(runAtLocal, tz) : null;
+  const runAtIsPast = runAtMs !== null && runAtMs <= now;
 
   const refreshStats = useCallback(() => {
     schedulerApi
@@ -240,12 +249,25 @@ export function ComposeScheduleForm({ onCreated }: Props) {
 
         {type === 'once' ? (
           <Field label={`When · ${tz}`}>
-            <Input
-              type="datetime-local"
-              value={runAtLocal}
-              onChange={(e) => setRunAtLocal(e.target.value)}
-              required
-            />
+            <>
+              <Input
+                type="datetime-local"
+                value={runAtLocal}
+                onChange={(e) => setRunAtLocal(e.target.value)}
+                required
+              />
+              {runAtMs !== null && (
+                <span
+                  className={`mt-1.5 block text-[12px] ${
+                    runAtIsPast ? 'text-accent-warm' : 'text-ink-soft'
+                  }`}
+                >
+                  {runAtIsPast
+                    ? `→ ${formatFriendly(runAtMs, tz, now)} — that time has already passed`
+                    : `→ ${formatFriendly(runAtMs, tz, now)} (${formatCountdown(runAtMs, now, tz)})`}
+                </span>
+              )}
+            </>
           </Field>
         ) : (
           <div className="space-y-4">
