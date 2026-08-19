@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq, isNull, sql } from 'drizzle-orm';
 import { env } from '../../config/env.js';
 import { db, sqlite } from '../../db/client.js';
 import { users, type User } from '../../db/schema.js';
@@ -118,11 +118,21 @@ export function isContactSyncEnabled(id: string): boolean {
   return row?.enabled ?? false;
 }
 
+/**
+ * Superusers who can actually log in. Disabled rows are excluded deliberately:
+ * `requireAuth` rejects on `disabledAt`, so a disabled superuser cannot manage
+ * users and cannot re-enable themselves. Counting them would let superuser A
+ * disable superuser B and then delete themselves — the guard sees two, and the
+ * instance is left with no usable superuser and no signup path to recover.
+ *
+ * Both callers ask the same question ("would deleting this account leave nobody
+ * able to manage users?"), so both want the logged-in-capable count.
+ */
 export function countSuperusers(): number {
   const row = db
     .select({ n: sql<number>`count(*)` })
     .from(users)
-    .where(eq(users.role, 'superuser'))
+    .where(and(eq(users.role, 'superuser'), isNull(users.disabledAt)))
     .get();
   return row?.n ?? 0;
 }
@@ -136,9 +146,10 @@ export type SelfDeleteResult = 'deleted' | 'last_superuser' | 'not_found';
 /**
  * Self-deletion, with the last-superuser check and the delete in one
  * BEGIN IMMEDIATE. The route checks first as a cheap early exit, but that check
- * and the delete are separated by an awaited WhatsApp logout — two superusers
- * deleting at the same moment would both pass it and leave the instance with
- * nobody who can manage users, and there is no signup path to recover.
+ * and the delete are separated by an awaited WhatsApp logout and the auth-state
+ * purge — two superusers deleting at the same moment would both pass it and
+ * leave the instance with nobody who can manage users, and there is no signup
+ * path to recover.
  *
  * The role is re-read from the DB rather than taken from `req.user`, which is a
  * snapshot taken at authentication time.

@@ -915,8 +915,24 @@ class SessionManager {
 
     // Gate is checked after the drain, never before it: Baileys keeps streaming
     // contacts.upsert regardless of our setting, so returning early would leave
-    // the buffer to grow for the life of the process.
-    if (!isContactSyncEnabled(h.userId)) return;
+    // the buffer to grow for the life of the process. The read is wrapped for
+    // the same reason flushPendingRecency wraps its own: this runs from a timer
+    // callback, so an exception here reaches the process-wide
+    // uncaughtException handler and shuts the whole server down. A failed read
+    // drops this batch — the buffer is already empty, and persisting on an
+    // unknown toggle would be writing contact data the user may have opted out
+    // of.
+    let syncEnabled: boolean;
+    try {
+      syncEnabled = isContactSyncEnabled(h.userId);
+    } catch (err) {
+      logger.warn(
+        { err, userId: h.userId, count: entries.length },
+        'contact sync toggle read failed — dropping contact batch',
+      );
+      return;
+    }
+    if (!syncEnabled) return;
 
     for (const e of entries) {
       try {

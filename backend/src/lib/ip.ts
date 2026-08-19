@@ -26,9 +26,13 @@ export function anonymizeIp(ip: string | null | undefined): string | null {
   }
 
   // Zone identifier ("fe80::1%eth0") is a local interface name, not part of the
-  // address, and would otherwise poison the last group.
+  // address, and would otherwise poison the last group. Zones are IPv6-only, so
+  // the flag is carried down to reject IPv4 that arrived with one: stripping
+  // first and asking later would turn "1.2.3.4%not-a-zone" into a confident
+  // "1.2.3.0/24" for an input we do not actually understand.
   const zone = host.indexOf('%');
-  if (zone !== -1) host = host.slice(0, zone);
+  const hadZone = zone !== -1;
+  if (hadZone) host = host.slice(0, zone);
   if (!host) return null;
 
   // "1.2.3.4:5678" — only stripped when the host half is itself a dotted quad,
@@ -41,11 +45,13 @@ export function anonymizeIp(ip: string | null | undefined): string | null {
   // (e.g. "::ffff:102:304") we fall through and parse it as plain IPv6.
   if (host.toLowerCase().startsWith('::ffff:')) {
     const v4 = parseIpv4(host.slice(7));
-    if (v4) return `${v4[0]}.${v4[1]}.${v4[2]}.0/24`;
+    if (v4) return hadZone ? null : `${v4[0]}.${v4[1]}.${v4[2]}.0/24`;
   }
 
+  // Every IPv4 exit is gated on hadZone, including the "1.2.3.4:5678" form the
+  // port strip above rewrites into one.
   const v4 = parseIpv4(host);
-  if (v4) return `${v4[0]}.${v4[1]}.${v4[2]}.0/24`;
+  if (v4) return hadZone ? null : `${v4[0]}.${v4[1]}.${v4[2]}.0/24`;
 
   if (host.includes(':')) {
     const expanded = expandIpv6(host);

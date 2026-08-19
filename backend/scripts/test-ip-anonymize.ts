@@ -59,6 +59,13 @@ const cases: Array<[string, string | null | undefined, string | null]> = [
   ['unclosed bracket', '[::1', null],
   ['bracketed form with trailing junk', '[::1]junk', null],
   ['not an address at all', 'unknown', null],
+  // Zone ids are IPv6-only. An IPv4 carrying one is not an address we
+  // understand, and answering "1.2.3.0/24" would be inventing the network.
+  ['IPv4 with a zone identifier', '1.2.3.4%eth0', null],
+  ['IPv4 with a zone-shaped suffix', '1.2.3.4%not-a-zone', null],
+  ['IPv4-mapped IPv6 with a zone identifier', '::ffff:1.2.3.4%eth0', null],
+  ['IPv4 with a port and a zone identifier', '1.2.3.4:5678%eth0', null],
+  ['bare "%" is not an address', '%eth0', null],
 ];
 
 let failure: unknown = null;

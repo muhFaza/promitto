@@ -206,9 +206,10 @@ change what is stored.
   flush, so the two can't disagree mid-drain) and the `upsertSynced` flush. In all three the
   **buffer is drained before the gate is checked** — Baileys keeps streaming regardless of our
   setting, so an early return *or a throw* above the clear grows the buffer for the life of the
-  process. In `flushPendingRecency` that means both buffers are copied and cleared before the
-  `isContactSyncEnabled` read, which is itself wrapped: a failed read drops that batch rather
-  than stranding it.
+  process. Every one of the three `isContactSyncEnabled` reads is also **wrapped in a
+  try/catch**: all three run from timer callbacks, so a DB exception there reaches `main.ts`'s
+  process-wide `uncaughtException` handler and shuts the server down. A failed read drops that
+  batch rather than stranding it or persisting on an unknown toggle.
   Incoming `messages.upsert` feeds recency through the same flush, so it needs no fourth gate.
 - **`purgeSynced` also nulls `last_interaction_at` and `wa_pinned_at` on the remaining manual
   contacts.** Deleting only `source = 'synced'` rows would leave a record of who the user talks
@@ -216,12 +217,25 @@ change what is stored.
 - **Account deletion is user-reachable and unrecoverable**: password + typed `DELETE`, refused
   with 409 for the last superuser, then a best-effort `disconnect(userId, { logout: true })` to
   unlink the device from the phone (failure logs and continues — WhatsApp must never block the
-  delete), the cascade, and `sessionManager.purgeAuthState(userId)`.
+  delete), `sessionManager.purgeAuthState(userId)`, and only then the DB cascade.
+  - **Filesystem before the DB row, and the order is load-bearing.** A crash between the two
+    has to leave something inconsistent: this way the account is still there with its pairing
+    gone, which the user fixes by re-pairing or deleting again. The reverse leaves Baileys
+    credentials on disk with no row pointing at them, no retry path, and nothing that ever
+    prunes them. Don't reorder it back to "cascade, then purge".
   - The last-superuser check is enforced **inside** `users/service.ts`'s `deleteSelf`, which
     re-reads the role and re-counts within one `sqlite.transaction().immediate()`. The route's
     own check is a cheap early exit only: it is separated from the delete by an awaited
-    WhatsApp logout, so two concurrent self-deletes could otherwise both pass it and leave the
-    instance with nobody who can manage users.
+    WhatsApp logout and the auth-state purge, so two concurrent self-deletes could otherwise
+    both pass it and leave the instance with nobody who can manage users. Because the purge now
+    runs first, a 409 from `deleteSelf` means the credentials are already gone and that user
+    must re-pair — the price of the ordering above, and it needs two concurrent deletes to
+    happen at all.
+  - **`countSuperusers` counts only `role = 'superuser' AND disabled_at IS NULL`.** A disabled
+    superuser is rejected by `requireAuth` and cannot re-enable themselves, so counting them
+    would let superuser A disable superuser B and then delete themselves — guard sees two,
+    instance ends up with no usable superuser and no signup path. `scripts/test-superuser-guard.ts`
+    asserts it.
   - **`purgeAuthState` removes `sessions/{userId}` *and* every `{userId}.revoked-*` sibling**,
     matched by plain string comparison on the directory listing (never a regex built from an
     id). Deletion is the only path that erases credentials: `wipeAuthState` deliberately
@@ -232,8 +246,10 @@ change what is stored.
 - **Stored IPs are coarsened** to `/24` (v4) or `/48` (v6) by `lib/ip.ts` before they reach
   `sessions.ip`. The login rate limiter still buckets on the full `req.ip` — it is in-memory
   and never persisted. Parsing is strict and every failure returns `null`: octets must be 1-3
-  ASCII digits ≤255 (`Number()` would accept `0x10` and `+1`), only one `::` is legal, zone ids
-  and bracketed/port forms are handled explicitly. A `null` is safe to store; an invented
+  ASCII digits ≤255 (`Number()` would accept `0x10` and `+1`), only one `::` is legal, and
+  bracketed/port forms are handled explicitly. Zone ids are **IPv6-only**, so a `%` on an IPv4
+  (or IPv4-mapped) address rejects rather than being stripped — `1.2.3.4%x` is not an address
+  we understand, and `1.2.3.0/24` would be an invented answer. A `null` is safe to store; an invented
   prefix looks exactly like a real network. `scripts/test-ip-anonymize.ts` asserts it.
 
 ## Scope — do not expand

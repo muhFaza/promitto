@@ -155,7 +155,8 @@ settingsRouter.delete('/account', requirePasswordRotated, async (req, res, next)
     // and there is no signup path to create a replacement. This is the cheap
     // early exit only — the authoritative check is inside deleteSelf, because
     // the awaited logout below opens a window two concurrent deletes could both
-    // walk through.
+    // walk through. It runs before anything destructive precisely so the
+    // authoritative check almost never fires after the credentials are gone.
     if (user.role === 'superuser' && countSuperusers() <= 1) {
       throw errors.conflict(
         'You are the only superuser. Promote another account before deleting this one.',
@@ -171,20 +172,33 @@ settingsRouter.delete('/account', requirePasswordRotated, async (req, res, next)
       logger.warn({ err, userId: user.id }, 'wa logout failed during account deletion');
     }
 
+    // Filesystem BEFORE the DB row, and the order is load-bearing — do not
+    // "tidy" it back. A crash between the two steps has to leave *something*
+    // inconsistent; this direction leaves the account alive with its pairing
+    // gone, which the user fixes by re-pairing or by deleting again. The
+    // reverse direction leaves Baileys credentials on disk with no row pointing
+    // at them, no retry path and nothing that ever prunes them — permanently
+    // orphaned credentials for an account that no longer exists.
+    //
+    // Re-asserted rather than assumed: if the disconnect above threw before
+    // wipeAuthState ran, the creds would still be here. This also removes the
+    // `.revoked-*` copies wipeAuthState moves aside — nothing else prunes them,
+    // and the user asked for their data to be gone.
+    await sessionManager.purgeAuthState(user.id);
+
+    // The authoritative last-superuser check. Reaching a 409 here means the
+    // credentials are already purged and the user must re-pair — the cheap
+    // pre-check above exists to make that vanishingly rare (it needs two
+    // concurrent self-deletes), and losing a pairing is the recoverable half of
+    // the trade-off above.
     const outcome = deleteSelf(user.id);
     if (outcome === 'last_superuser') {
       throw errors.conflict(
-        'You are the only superuser. Promote another account before deleting this one.',
+        'You are the only superuser. Promote another account before deleting this one. ' +
+          'This device has been unlinked from WhatsApp; reconnect from the dashboard.',
       );
     }
     logger.info({ userId: user.id, email: user.email, outcome }, 'account self-deleted');
-
-    // Re-asserted rather than assumed: if the disconnect above threw before
-    // wipeAuthState ran, the Baileys creds would otherwise outlive the account
-    // they belong to, on disk, with no row left pointing at them. This also
-    // removes the `.revoked-*` copies wipeAuthState moves aside — nothing else
-    // prunes them, and the user asked for their data to be gone.
-    await sessionManager.purgeAuthState(user.id);
 
     clearSessionCookies(res);
     res.status(204).end();
