@@ -320,6 +320,29 @@ Semver in both `package.json` files, kept in lockstep, with a matching `vX.Y.Z` 
 GitHub release. **The release is what the check compares against** — bumping `package.json`
 without tagging leaves every instance reporting "unknown" forever.
 
+### Cutting a release
+
+Four steps, and **skipping either of the last two silently breaks the feature** rather than
+failing loudly. There is no automation for this and no CI check that the tag exists.
+
+1. Bump `version` in **both** `backend/package.json` and `frontend/package.json` to the same
+   value, in the PR that ships the change.
+2. Merge to `main`. The deploy workflow builds and ships it; the running instance now reports
+   the new version.
+3. `git tag vX.Y.Z <merge-sha> && git push origin vX.Y.Z` — the tag must match the
+   `package.json` value, with a `v` prefix. `compareVersions` strips the `v`, so `v1.0.0` and
+   `1.0.0` compare equal; anything else compares as unparseable, i.e. "no update".
+4. `gh release create vX.Y.Z --title ... --notes ...`. **A tag alone is not enough** —
+   `/repos/:owner/:repo/releases/latest` only sees published releases, so a tagged-but-unreleased
+   version leaves every instance reporting "unknown".
+
+Instances cache for 6h, so a fresh release is not visible in Settings immediately. Restarting
+the container clears the cache if you want to check it now.
+
+`releases/latest` also ignores drafts and prereleases, so marking a release either way means
+instances keep pointing at the previous one — which is the correct behaviour, but only if you
+meant it.
+
 - `modules/version/service.ts` reads its own version from `backend/package.json` at import
   (baked into the image, so it cannot change under us) and its commit from `GIT_SHA`, a build
   arg the Dockerfile declares **last** — it changes on every push, and anything below a build
