@@ -10,6 +10,7 @@ import { Modal } from '../components/ui/Modal';
 import { Select } from '../components/ui/Select';
 import { Spinner } from '../components/ui/Spinner';
 import { useAuthStore } from '../stores/auth';
+import { VersionPanel } from '../components/VersionPanel';
 import { useContactsStore } from '../stores/contacts';
 import { useUiStore } from '../stores/ui';
 import { useWaStore } from '../stores/wa';
@@ -470,6 +471,18 @@ export function Settings() {
           </div>
         </section>
 
+        <section className="border-b border-rule pb-8">
+          <div className="eyebrow">About this server</div>
+          <h2 className="mt-1 font-display text-2xl italic text-ink">
+            What you are running.
+          </h2>
+          <p className="mt-2 max-w-md text-[13px] text-ink-soft">
+            Promitto is open source. You can read every line this server runs, and host your
+            own copy if you would rather not trust this one.
+          </p>
+          <VersionPanel />
+        </section>
+
         <section className={mustChange ? 'opacity-40' : undefined}>
           <div className="eyebrow text-accent-warm">Danger zone</div>
           <h2 className="mt-1 font-display text-2xl italic text-ink">
@@ -477,7 +490,7 @@ export function Settings() {
           </h2>
           <p className="mt-2 max-w-md text-[13px] text-ink-soft">
             Deleting your account removes everything this server holds about you. There
-            are no backups, so nobody — including the operator — can bring it back.
+            are no backups, so nobody — including the admin — can bring it back.
           </p>
           <Button
             variant="danger"

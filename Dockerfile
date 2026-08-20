@@ -44,5 +44,11 @@ USER node
 WORKDIR /app/backend
 ENV NODE_ENV=production
 
+# Injected by CI so a running instance can report exactly which commit it is.
+# Declared last on purpose: it changes on every push, and anything below a
+# build arg is rebuilt when that arg changes.
+ARG GIT_SHA=""
+ENV GIT_SHA=$GIT_SHA
+
 EXPOSE 3000
 ENTRYPOINT ["/app/entrypoint.sh"]

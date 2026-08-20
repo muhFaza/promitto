@@ -23,14 +23,15 @@ docker compose exec backend npm run db:migrate
 docker compose exec backend npm run cli:create-superuser
 docker compose exec backend npm run cli:reset-superuser-password
 
-docker compose exec backend npm run verify                # all five suites, fail-fast
+docker compose exec backend npm run verify                # all six suites, fail-fast
 docker compose exec backend npx tsx scripts/test-interaction-flush.ts   # recents assertions
 docker compose exec backend npx tsx scripts/test-retention-sweep.ts     # retention assertions
 docker compose exec backend npx tsx scripts/test-ip-anonymize.ts        # IP coarsening assertions
+docker compose exec backend npx tsx scripts/test-version-compare.ts      # version-compare assertions
 docker compose exec frontend npm run verify              # frontend suite (date/countdown)
 ```
 
-**There is no test framework.** No runner, no `*.test.ts` anywhere — so there is no "run a single test". `npm run verify` is a plain `&&` chain of standalone suites, fail-fast — five on the backend (`test-ip-anonymize`, `test-superuser-guard`, `test-retention-sweep`, `test-interaction-flush`, `test-signal-tx-isolation`), each with its own throwaway SQLite file, and one on the frontend (`test-dates`). **`.github/workflows/deploy.yml` runs BOTH before the image is built**, so a change that widens the retention delete predicate fails the deploy instead of reaching production — that gate is the closest thing to a backup this project has. The frontend half was added after the date helpers shipped a bug that a suite existed for but nothing ran; if you add a suite, wire it into a `verify` script or it does not exist. Verification is `verify` + `typecheck` + `lint` + exercising the app. If you add tests, you are also picking the runner; say so rather than assuming one exists.
+**There is no test framework.** No runner, no `*.test.ts` anywhere — so there is no "run a single test". `npm run verify` is a plain `&&` chain of standalone suites, fail-fast — six on the backend (`test-ip-anonymize`, `test-version-compare`, `test-superuser-guard`, `test-retention-sweep`, `test-interaction-flush`, `test-signal-tx-isolation`), most with their own throwaway SQLite file, and one on the frontend (`test-dates`). **`.github/workflows/deploy.yml` runs BOTH before the image is built**, so a change that widens the retention delete predicate fails the deploy instead of reaching production — that gate is the closest thing to a backup this project has. The frontend half was added after the date helpers shipped a bug that a suite existed for but nothing ran; if you add a suite, wire it into a `verify` script or it does not exist. Verification is `verify` + `typecheck` + `lint` + exercising the app. If you add tests, you are also picking the runner; say so rather than assuming one exists.
 
 `scripts/test-seed-superuser.ts` and `scripts/test-reset-superuser.ts` are **not** tests — they are non-interactive stand-ins for the `@inquirer/prompts` CLIs (which need a TTY), e.g. `tsx scripts/test-seed-superuser.ts <email> <password>`.
 
@@ -68,6 +69,7 @@ Routers and their gating (`A` = `requireAuth`, `P` = `requirePasswordRotated`, `
 | `/api/wa` | `A` + `P` + `C` | `connect`, `disconnect`, `logout`, `status`, `events` (SSE) |
 | `/api/contacts` | `A` + `P` + `C` | list (search, limit capped 200), `recent` (WA-pinned first, then interaction recency, limit capped 50), create, rename, `GET /:id/avatar` (302 to the WA CDN, or 404), `POST /purge-synced` (registered above `/:id` so the literal path wins), delete |
 | `/api/scheduler` | `A` + `P` + `C` | create, list (`?status=upcoming\|recurring\|history\|failed`), `stats`, `preview`, patch, cancel |
+| `/api/version` | `A` | `GET /` — running version, commit, and whether the repo has a newer release. Behind auth on purpose: the repo is public but the version a *running* instance is on tells an unauthed scanner which advisories to try |
 | `/api/settings` | `A` + `C`, `P` per-route | password, timezone, timezone list (`GET /timezones` un-gated by `P` on purpose), `retention`, `contact-sync`, `purge-data`, `DELETE /account` |
 
 Every module follows `routes.ts` (zod parsing + HTTP) → `service.ts` (Drizzle, synchronous better-sqlite3). Services take `userId` as the first argument and scope every query by it — that per-query `userId` filter *is* the tenancy boundary; there is no row-level security underneath it.
@@ -311,6 +313,61 @@ change what is stored.
   (or IPv4-mapped) address rejects rather than being stripped — `1.2.3.4%x` is not an address
   we understand, and `1.2.3.0/24` would be an invented answer. A `null` is safe to store; an invented
   prefix looks exactly like a real network. `scripts/test-ip-anonymize.ts` asserts it.
+
+## Versioning & the update check
+
+Semver in both `package.json` files, kept in lockstep, with a matching `vX.Y.Z` git tag and a
+GitHub release. **The release is what the check compares against** — bumping `package.json`
+without tagging leaves every instance reporting "unknown" forever.
+
+### Cutting a release
+
+Four steps, and **skipping either of the last two silently breaks the feature** rather than
+failing loudly. There is no automation for this and no CI check that the tag exists.
+
+1. Bump `version` in **both** `backend/package.json` and `frontend/package.json` to the same
+   value, in the PR that ships the change.
+2. Merge to `main`. The deploy workflow builds and ships it; the running instance now reports
+   the new version.
+3. `git tag vX.Y.Z <merge-sha> && git push origin vX.Y.Z` — the tag must match the
+   `package.json` value, with a `v` prefix. `compareVersions` strips the `v`, so `v1.0.0` and
+   `1.0.0` compare equal; anything else compares as unparseable, i.e. "no update".
+4. `gh release create vX.Y.Z --title ... --notes ...`. **A tag alone is not enough** —
+   `/repos/:owner/:repo/releases/latest` only sees published releases, so a tagged-but-unreleased
+   version leaves every instance reporting "unknown".
+
+Instances cache for 6h, so a fresh release is not visible in Settings immediately. Restarting
+the container clears the cache if you want to check it now.
+
+`releases/latest` also ignores drafts and prereleases, so marking a release either way means
+instances keep pointing at the previous one — which is the correct behaviour, but only if you
+meant it.
+
+- `modules/version/service.ts` reads its own version from `backend/package.json` at import
+  (baked into the image, so it cannot change under us) and its commit from `GIT_SHA`, a build
+  arg the Dockerfile declares **last** — it changes on every push, and anything below a build
+  arg is rebuilt when that arg changes. `deploy.yml` passes `${{ github.sha }}`.
+- **The comparison runs on the server, not in the browser.** `connect-src` is `'self'`, and
+  loosening it so every browser could call `api.github.com` would hand GitHub one request per
+  user — plus their IP — for a fact the server can fetch once every six hours. The route serves
+  the cached answer and refreshes behind the response, so a slow or dead GitHub can never make
+  Settings hang.
+- **`updateAvailable` is `boolean | null`, and the `null` is load-bearing.** It means "we have
+  not managed to ask", which the UI renders as *unknown* — not as *up to date*. A check that
+  fails silently into reassurance is worse than no check.
+- Failures back off for 30 minutes and log at `debug`. GitHub allows 60 unauthenticated calls
+  an hour **per IP**, and this box shares its address with everything else on it, so a
+  hard-failing check must not spend that budget. The whole call is additionally bounded by a
+  5s `AbortController` — a hung socket would otherwise pin a timer and its buffers inside a
+  384MB container.
+- `compareVersions` lives in **`lib/version.ts`, not the module**, so it stays pure and
+  directly testable; the module pulls in `env` and the network. It is deliberately not a semver
+  library: unparseable input returns `0`, which reads as "no update" rather than nagging
+  forever over a tag nobody anticipated. `scripts/test-version-compare.ts` asserts it,
+  including that segments compare **numerically** — `0.10.0` must beat `0.9.0`.
+- `UPDATE_CHECK=false` disables the outbound call entirely. It is the only outbound request
+  this app makes that is not to WhatsApp, so an air-gapped host should not have to patch code
+  to stop it — and `/privacy` discloses it, which it must stay accurate about.
 
 ## Scope — do not expand
 
